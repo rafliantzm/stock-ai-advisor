@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../app/app_config.dart';
+import '../models/market_data_models.dart';
 import 'api_result.dart';
 
 class EdgeFunctionClient {
@@ -47,5 +48,40 @@ class EdgeFunctionClient {
       error['message']?.toString() ?? 'Terjadi kesalahan.',
       error['details'],
     );
+  }
+
+  Future<MarketContextResponse> getMarketContext({
+    String marketCode = 'IDX',
+    String indexSymbol = 'IHSG',
+    bool allowStale = true,
+    bool createSampleIfMissing = true,
+  }) async {
+    final result = await post(
+      'get-market-context',
+      body: {
+        'market_code': marketCode,
+        'index_symbol': indexSymbol,
+        'allow_stale': allowStale,
+        'create_sample_if_missing': createSampleIfMissing,
+      },
+    );
+    return MarketContextResponse.fromResult(result.data, result.meta);
+  }
+
+  Future<SyncMarketCandidatesResponse> syncMarketCandidates({
+    List<String> symbolCodes = const [],
+    int limit = 10,
+    bool includeMarketContext = true,
+  }) async {
+    final result = await post(
+      'sync-market-candidates',
+      body: {
+        'symbol_codes': symbolCodes,
+        'limit': limit,
+        'include_market_context': includeMarketContext,
+        'run_mode': 'on_demand',
+      },
+    );
+    return SyncMarketCandidatesResponse.fromResult(result.data, result.meta);
   }
 }

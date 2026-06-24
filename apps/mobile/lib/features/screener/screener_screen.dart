@@ -4,6 +4,7 @@ import '../../app/app_config.dart';
 import '../../core/api/api_result.dart';
 import '../../core/api/edge_function_client.dart';
 import '../../core/models/analysis_models.dart';
+import '../../core/models/market_data_models.dart';
 import '../../core/utils/map_utils.dart';
 import '../../design_system/ui_components.dart';
 import 'data/screener_repository.dart';
@@ -23,8 +24,11 @@ class _ScreenerScreenState extends State<ScreenerScreen> {
   List<DailyCandidate> _dailyCandidates = [];
   Map<String, dynamic>? _preset;
   var _isLoading = false;
+  var _isSyncingMarketData = false;
   String? _error;
   String? _emptyReason;
+  SyncMarketCandidatesResponse? _marketSync;
+  String? _marketSyncError;
 
   @override
   void initState() {
@@ -69,6 +73,37 @@ class _ScreenerScreenState extends State<ScreenerScreen> {
     }
   }
 
+  Future<void> _syncMarketCandidates() async {
+    setState(() {
+      _isSyncingMarketData = true;
+      _marketSyncError = null;
+    });
+
+    try {
+      final symbolCodes = _results
+          .map(
+            (result) =>
+                asStringMap(result['symbol'])['symbol_code']?.toString(),
+          )
+          .whereType<String>()
+          .where((code) => code.isNotEmpty)
+          .take(10)
+          .toList();
+
+      final result = await _api.syncMarketCandidates(
+        symbolCodes: symbolCodes,
+        limit: 10,
+        includeMarketContext: true,
+      );
+
+      setState(() => _marketSync = result);
+    } on ApiException catch (error) {
+      setState(() => _marketSyncError = error.message);
+    } finally {
+      if (mounted) setState(() => _isSyncingMarketData = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListView(
@@ -107,6 +142,14 @@ class _ScreenerScreenState extends State<ScreenerScreen> {
                   }),
           ),
         ),
+        const SizedBox(height: 12),
+        _MarketCandidateSyncCard(
+          sync: _marketSync,
+          error: _marketSyncError,
+          isLoading: _isSyncingMarketData,
+          onSync: _syncMarketCandidates,
+          hasScreenerResults: _results.isNotEmpty,
+        ),
         if (_error != null) ...[
           const SizedBox(height: 12),
           AsyncStateView(title: 'Screener gagal dijalankan', message: _error),
@@ -139,6 +182,99 @@ class _ScreenerScreenState extends State<ScreenerScreen> {
         const SizedBox(height: 12),
         _DailyCandidatesSection(candidates: _dailyCandidates),
       ],
+    );
+  }
+}
+
+class _MarketCandidateSyncCard extends StatelessWidget {
+  const _MarketCandidateSyncCard({
+    required this.sync,
+    required this.error,
+    required this.isLoading,
+    required this.onSync,
+    required this.hasScreenerResults,
+  });
+
+  final SyncMarketCandidatesResponse? sync;
+  final String? error;
+  final bool isLoading;
+  final VoidCallback onSync;
+  final bool hasScreenerResults;
+
+  @override
+  Widget build(BuildContext context) {
+    return SectionCard(
+      title: 'P2 Market Data Sync',
+      subtitle: hasScreenerResults
+          ? 'Sync market candidates dari hasil screener terakhir.'
+          : 'Belum ada hasil screener; sync akan memakai sample symbols aktif dari backend.',
+      trailing: FilledButton.icon(
+        onPressed: isLoading ? null : onSync,
+        icon: isLoading
+            ? const SizedBox.square(
+                dimension: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.sync),
+        label: const Text('Sync'),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (error != null)
+            RiskWarningBox(level: 'error', message: error!)
+          else if (sync == null)
+            const AsyncStateView(
+              title: 'Market data belum disinkronkan',
+              message:
+                  'Jalankan sync untuk membuat sample data P2 melalui Edge Function.',
+            )
+          else ...[
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                StatusBadge(label: sync!.dataQuality),
+                StatusBadge(label: sync!.providerStatus),
+                StatusBadge(label: '${sync!.syncedCount} synced symbols'),
+                StatusBadge(label: '${sync!.rowsInserted} rows inserted'),
+              ],
+            ),
+            if (sync!.riskWarnings.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              CompactRiskWarningList(
+                items: sync!.riskWarnings
+                    .map(
+                      (warning) => CompactRiskWarningItem(
+                        level: warning.level,
+                        message: warning.message,
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
+            const SizedBox(height: 12),
+            if (sync!.syncedSymbols.isEmpty)
+              const Text(
+                'Belum ada synced symbols. Cek provider belum aktif atau data sample belum tersedia.',
+              )
+            else
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final symbol in sync!.syncedSymbols)
+                    Chip(
+                      label: Text(
+                        '${symbol.symbolCode} - ${symbol.companyName}',
+                      ),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                ],
+              ),
+          ],
+        ],
+      ),
     );
   }
 }
