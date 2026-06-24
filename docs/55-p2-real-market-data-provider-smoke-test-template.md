@@ -93,10 +93,6 @@ Expected fallback result:
 
 Actual:
 
-```
-Status: PASS
-
-Actual Result:
 Status: PASS
 
 Actual Result:
@@ -108,7 +104,7 @@ Actual Result:
 - get-market-context provider_mode: provider_error.
 - get-market-context data_quality: stale.
 - get-market-context provider_status: provider live belum mengembalikan data valid - fallback cache aktif.
-- fallback status: active.
+- fallback_status: active.
 - provider_sync_runs: 7 rows.
 - market_price_snapshots: 35 rows.
 - ohlcv_bars: 0 rows.
@@ -120,10 +116,6 @@ Actual Result:
 
 Conclusion:
 The real market data provider adapter is structurally working, but live production data is not active yet. The system safely falls back to stale/sample data with clear provider_error metadata and risk warnings.
-
-```
-
-Status: Pass / Fail
 
 ## Test 2 - Get Market Context
 
