@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mobile/app/app_config.dart';
 import 'package:mobile/app/stock_ai_app.dart';
 import 'package:mobile/design_system/ui_components.dart';
+import 'package:mobile/core/models/market_data_models.dart';
 import 'package:mobile/features/alerts/alert_screen.dart';
 
 void main() {
@@ -38,5 +39,46 @@ void main() {
     );
 
     expect(find.text('Final Menunggu data'), findsOneWidget);
+  });
+
+  test('market context adapter reads P2 response contract', () {
+    final response = MarketContextResponse.fromResult(
+      {
+        'market_context': {
+          'market_code': 'IDX',
+          'index_symbol': 'IHSG',
+          'market_status': 'provider belum aktif',
+          'index_trend': 'needs_more_data',
+          'risk_regime': 'needs_more_data',
+          'data_quality': 'sample',
+          'is_stale': true,
+          'risk_warning': [
+            {'level': 'medium', 'message': 'sample data'},
+          ],
+        },
+        'provider': {
+          'provider_name': 'sample_provider',
+          'provider_status': 'provider belum aktif',
+        },
+        'cache': {
+          'allow_stale': true,
+          'stale_blocked': false,
+          'ttl_seconds': 900,
+        },
+        'disclaimer': 'Edukasi.',
+      },
+      {
+        'data_quality': 'sample',
+        'provider_name': 'sample_provider',
+        'provider_status': 'provider belum aktif',
+      },
+    );
+
+    expect(response.marketContext.marketCode, 'IDX');
+    expect(response.marketContext.isSample, isTrue);
+    expect(response.marketContext.isStale, isTrue);
+    expect(response.marketContext.riskWarnings.first.level, 'medium');
+    expect(response.provider.providerName, 'sample_provider');
+    expect(response.cache.ttlSeconds, 900);
   });
 }
