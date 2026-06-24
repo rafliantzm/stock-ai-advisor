@@ -28,6 +28,11 @@ Dokumen ini menjelaskan fondasi production-ready untuk market data provider di `
   - `sample`
   - `stale`
   - `production`
+- `provider_mode` response Edge Function hanya:
+  - `sample`
+  - `live`
+  - `fallback_sample`
+  - `provider_error`
 - Nilai database tetap kompatibel dengan migration P2 awal. Data production disimpan sebagai nilai DB yang sudah tersedia, lalu dinormalisasi kembali menjadi `production` di response.
 
 ## Provider Runtime
@@ -38,7 +43,8 @@ Env yang digunakan:
 
 | Env | Fungsi | Aman untuk Flutter |
 | --- | --- | --- |
-| `MARKET_DATA_PROVIDER_MODE` | `sample` atau `production` | Tidak |
+| `MARKET_DATA_PROVIDER_MODE` | `sample` atau `live`; `production` diterima sebagai alias lama | Tidak |
+| `MARKET_DATA_PROVIDER_ADAPTER` | Adapter live, default `generic_json` | Tidak |
 | `MARKET_DATA_PROVIDER_NAME` | Nama provider aktif | Boleh tampil sebagai metadata non-secret |
 | `MARKET_DATA_API_BASE_URL` | Base URL provider | Tidak |
 | `MARKET_DATA_API_KEY` | Secret provider | Tidak |
@@ -53,9 +59,10 @@ Mode runtime:
 
 | Mode | Kondisi | Active Provider | Response Quality |
 | --- | --- | --- | --- |
-| `sample` | Tidak ada mode production | `sample_provider` | `sample` |
-| `fallback` | Mode production diminta tetapi env belum lengkap | `sample_provider` | `sample` |
-| `production` | Env production lengkap | Provider dari env | `production` jika data valid, `stale` jika fallback diperlukan |
+| `sample` | Tidak ada mode live | `sample_provider` | `sample` |
+| `fallback_sample` | Mode live diminta tetapi env belum lengkap | `sample_provider` | `sample` |
+| `live` | Env live lengkap dan payload valid | Provider dari env | `production` |
+| `provider_error` | Env live lengkap tetapi provider gagal/invalid/stale | Provider dari env dengan fallback aman | `stale` |
 
 ## Normalized Contracts
 
@@ -170,7 +177,7 @@ Alur:
 2. Resolve provider runtime dari env.
 3. Ensure row `provider_sources`.
 4. Load symbols dari table `symbols`.
-5. Jika production env lengkap, coba fetch provider melalui generic adapter.
+5. Jika live env lengkap, coba fetch provider melalui adapter `generic_json`.
 6. Jika provider tidak valid atau gagal, fallback ke sample/stale.
 7. Insert normalized rows ke:
    - `market_price_snapshots`
@@ -186,7 +193,7 @@ Alur:
 1. Validasi JWT user.
 2. Resolve provider runtime.
 3. Ambil latest `market_context_snapshots`.
-4. Jika kosong dan fallback diizinkan, coba provider production bila env lengkap.
+4. Jika kosong dan fallback diizinkan, coba provider live bila env lengkap.
 5. Jika provider tidak tersedia atau payload belum valid, buat row sample/stale.
 6. Sanitize response.
 7. Return context, provider metadata aman, cache metadata, disclaimer edukatif.
@@ -195,8 +202,8 @@ Alur:
 
 Fallback dipakai jika:
 
-- mode production belum dipasang;
-- env production belum lengkap;
+- mode live belum dipasang;
+- env live belum lengkap;
 - provider request timeout;
 - provider response bukan JSON valid;
 - provider response tidak punya quote/context yang bisa dinormalisasi;

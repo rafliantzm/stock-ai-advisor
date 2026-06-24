@@ -138,12 +138,12 @@ Pass criteria:
 - `risk_warning` muncul jika quality bukan `production`.
 - Tidak ada provider API key atau service role key di response.
 
-## Test 3 - Missing Provider Env Behavior
+## Test 3 - Missing Live Provider Env Behavior
 
 Setup di Supabase Edge Function environment:
 
 ```text
-MARKET_DATA_PROVIDER_MODE=production
+MARKET_DATA_PROVIDER_MODE=live
 MARKET_DATA_PROVIDER_NAME=example_provider
 ```
 
@@ -165,7 +165,7 @@ Expected result:
   "ok": true,
   "data": {
     "data_quality": "sample",
-    "provider_status": "provider production belum lengkap - fallback sample provider",
+    "provider_status": "provider live belum lengkap - fallback sample provider",
     "risk_warning": [
       {
         "level": "high"
@@ -173,7 +173,7 @@ Expected result:
     ]
   },
   "meta": {
-    "provider_mode": "fallback"
+    "provider_mode": "fallback_sample"
   }
 }
 ```
@@ -184,12 +184,13 @@ Pass criteria:
 - Response menjelaskan fallback.
 - Missing env name boleh tampil, tetapi nilai secret tidak boleh tampil.
 
-## Test 4 - Production Provider Configured
+## Test 4 - Live Provider Configured
 
 Setup minimal di Supabase Edge Function environment:
 
 ```text
-MARKET_DATA_PROVIDER_MODE=production
+MARKET_DATA_PROVIDER_MODE=live
+MARKET_DATA_PROVIDER_ADAPTER=generic_json
 MARKET_DATA_PROVIDER_NAME=provider_name
 MARKET_DATA_API_BASE_URL=https://provider.example
 MARKET_DATA_API_KEY=secret_value
@@ -214,10 +215,10 @@ Expected result jika provider sandbox mengembalikan payload valid:
   "data": {
     "provider": {
       "provider_name": "provider_name",
-      "provider_mode": "production"
+      "provider_mode": "live"
     },
     "data_quality": "production",
-    "provider_status": "provider production aktif melalui Edge Function",
+    "provider_status": "provider live aktif melalui Edge Function",
     "risk_warning": []
   }
 }
@@ -230,7 +231,7 @@ Expected result jika provider tidak tersedia atau payload belum sesuai:
   "ok": true,
   "data": {
     "data_quality": "stale",
-    "provider_status": "provider production belum mengembalikan data valid - fallback aman aktif",
+    "provider_status": "provider live error - fallback sample aktif",
     "risk_warning": [
       {
         "level": "high"
@@ -244,7 +245,7 @@ Pass criteria:
 
 - Secret tidak muncul di response atau `provider_sync_runs.metadata`.
 - Fallback tetap menghasilkan response sukses yang aman.
-- User melihat state sample/stale/production dengan jelas.
+- User melihat state sample/stale/production dan provider mode dengan jelas.
 
 ## Test 5 - Database Row Verification
 
@@ -280,6 +281,8 @@ select
   metadata -> 'provider' as provider_meta,
   metadata ->> 'data_quality' as data_quality,
   metadata ->> 'provider_status' as provider_status,
+  metadata ->> 'provider_mode' as provider_mode,
+  metadata ->> 'used_live_adapter' as used_live_adapter,
   created_at
 from public.provider_sync_runs
 order by created_at desc
@@ -389,7 +392,7 @@ P2 provider production foundation dianggap lulus smoke test jika:
 - `sync-market-candidates` sukses di mode sample/fallback.
 - `get-market-context` sukses di mode sample/fallback.
 - Missing env tidak membuat endpoint crash.
-- Production env lengkap bisa mencoba adapter provider.
+- Live env lengkap bisa mencoba adapter provider.
 - Fallback stale tetap aman saat provider gagal.
 - Database rows terisi tanpa secret.
 - Flutter tidak menyimpan service role key atau provider secret.

@@ -28,14 +28,17 @@ export type ProviderRuntime = {
   requestedProviderName: string;
   activeProviderName: string;
   providerType: "sample" | "vendor";
-  mode: "sample" | "production" | "fallback";
+  mode: ProviderMode;
   dataQuality: MarketDataQuality;
   providerStatus: string;
+  providerAdapter: string;
   cacheTtlSeconds: number;
-  isProductionConfigured: boolean;
+  isLiveConfigured: boolean;
   missingEnv: string[];
   riskWarning: RiskWarning[];
 };
+
+export type ProviderMode = "sample" | "live" | "fallback_sample" | "provider_error";
 
 export type RiskWarning = {
   level: "low" | "medium" | "high";
@@ -146,7 +149,8 @@ export type MarketCandidateRows = {
   dataQuality: MarketDataQuality;
   providerStatus: string;
   riskWarning: RiskWarning[];
-  usedProductionAdapter: boolean;
+  usedLiveAdapter: boolean;
+  providerMode: ProviderMode;
 };
 
 export type MarketContextBuildResult = {
@@ -154,7 +158,8 @@ export type MarketContextBuildResult = {
   dataQuality: MarketDataQuality;
   providerStatus: string;
   riskWarning: RiskWarning[];
-  usedProductionAdapter: boolean;
+  usedLiveAdapter: boolean;
+  providerMode: ProviderMode;
 };
 
 type ProviderQuoteResponse = {
@@ -184,8 +189,8 @@ export const DEFAULT_PROVIDER_NAME = "sample_provider";
 export const DEFAULT_MARKET_CODE = "IDX";
 export const DEFAULT_INDEX_SYMBOL = "IHSG";
 export const SAMPLE_STALENESS_WARNING = "provider belum aktif - sample data";
-export const STALE_PROVIDER_WARNING = "provider production belum menghasilkan data baru - memakai fallback aman";
-const CONTRACT_VERSION = "p2_market_data_provider_contract_v1";
+export const STALE_PROVIDER_WARNING = "provider live belum menghasilkan data baru - memakai fallback aman";
+const CONTRACT_VERSION = "p2_market_data_live_provider_contract_v1";
 
 export function marketProviderName(): string {
   return Deno.env.get("MARKET_DATA_PROVIDER_NAME")?.trim() || DEFAULT_PROVIDER_NAME;
@@ -199,14 +204,15 @@ export function marketCacheTtlSeconds(): number {
 
 export function resolveProviderRuntime(): ProviderRuntime {
   const requestedProviderName = marketProviderName();
-  const requestedMode = (Deno.env.get("MARKET_DATA_PROVIDER_MODE") ?? "").trim().toLowerCase();
-  const wantsProduction = requestedMode === "production" || requestedProviderName !== DEFAULT_PROVIDER_NAME;
+  const requestedMode = normalizeProviderMode(Deno.env.get("MARKET_DATA_PROVIDER_MODE"));
+  const providerAdapter = liveProviderAdapterName();
+  const wantsLive = requestedMode === "live" || requestedProviderName !== DEFAULT_PROVIDER_NAME;
   const requiredEnv = ["MARKET_DATA_PROVIDER_NAME", "MARKET_DATA_API_BASE_URL", "MARKET_DATA_API_KEY"];
-  const missingEnv = wantsProduction
+  const missingEnv = wantsLive
     ? requiredEnv.filter((name) => !Deno.env.get(name)?.trim())
     : [];
 
-  if (!wantsProduction) {
+  if (!wantsLive) {
     return {
       requestedProviderName,
       activeProviderName: DEFAULT_PROVIDER_NAME,
@@ -214,8 +220,9 @@ export function resolveProviderRuntime(): ProviderRuntime {
       mode: "sample",
       dataQuality: "sample",
       providerStatus: "provider belum aktif - memakai sample provider",
+      providerAdapter,
       cacheTtlSeconds: marketCacheTtlSeconds(),
-      isProductionConfigured: false,
+      isLiveConfigured: false,
       missingEnv,
       riskWarning: [{
         level: "medium",
@@ -229,15 +236,16 @@ export function resolveProviderRuntime(): ProviderRuntime {
       requestedProviderName,
       activeProviderName: DEFAULT_PROVIDER_NAME,
       providerType: "sample",
-      mode: "fallback",
+      mode: "fallback_sample",
       dataQuality: "sample",
-      providerStatus: "provider production belum lengkap - fallback sample provider",
+      providerStatus: "provider live belum lengkap - fallback sample provider",
+      providerAdapter,
       cacheTtlSeconds: marketCacheTtlSeconds(),
-      isProductionConfigured: false,
+      isLiveConfigured: false,
       missingEnv,
       riskWarning: [{
         level: "high",
-        message: "Provider production belum lengkap; data hanya sample untuk edukasi.",
+        message: "Provider live belum lengkap; data hanya sample untuk edukasi.",
       }],
     };
   }
@@ -246,14 +254,25 @@ export function resolveProviderRuntime(): ProviderRuntime {
     requestedProviderName,
     activeProviderName: requestedProviderName,
     providerType: "vendor",
-    mode: "production",
+    mode: "live",
     dataQuality: "production",
-    providerStatus: "provider production aktif melalui Edge Function",
+    providerStatus: "provider live aktif melalui Edge Function",
+    providerAdapter,
     cacheTtlSeconds: marketCacheTtlSeconds(),
-    isProductionConfigured: true,
+    isLiveConfigured: true,
     missingEnv,
     riskWarning: [],
   };
+}
+
+function normalizeProviderMode(value: string | undefined | null): "sample" | "live" {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "live" || normalized === "production") return "live";
+  return "sample";
+}
+
+function liveProviderAdapterName(): string {
+  return Deno.env.get("MARKET_DATA_PROVIDER_ADAPTER")?.trim().toLowerCase() || "generic_json";
 }
 
 export function providerMeta(runtime: ProviderRuntime) {
@@ -262,9 +281,10 @@ export function providerMeta(runtime: ProviderRuntime) {
     requested_provider_name: runtime.requestedProviderName,
     provider_type: runtime.providerType,
     provider_mode: runtime.mode,
+    provider_adapter: runtime.providerAdapter,
     provider_status: runtime.providerStatus,
     data_quality: runtime.dataQuality,
-    missing_env: runtime.missingEnv,
+    missing_env_count: runtime.missingEnv.length,
   };
 }
 
@@ -344,7 +364,7 @@ export async function ensureProviderSource(
       cache_ttl_seconds: marketCacheTtlSeconds(),
       status: "active",
       notes: providerType === "sample"
-        ? "Development sample provider. provider belum aktif untuk production."
+        ? "Development sample provider. provider live belum aktif."
         : "Provider metadata only. Secret disimpan di environment Edge Function.",
     }, { onConflict: "provider_name" })
     .select("id, provider_name, provider_type, cache_ttl_seconds, status")
@@ -548,18 +568,55 @@ export async function buildMarketCandidateRows(
   observedAt: string,
   includeMarketContext: boolean,
 ): Promise<MarketCandidateRows> {
-  if (runtime.isProductionConfigured) {
+  if (runtime.isLiveConfigured) {
     try {
-      const productionRows = await fetchProductionCandidateRows(symbols, provider, runtime, observedAt, includeMarketContext);
-      if (productionRows.priceSnapshots.length > 0 || !includeMarketContext || productionRows.marketContext) {
-        return productionRows;
+      const liveRows = await fetchLiveCandidateRows(symbols, provider, runtime, observedAt, includeMarketContext);
+      if (liveRows.priceSnapshots.length > 0 || !includeMarketContext || liveRows.marketContext) {
+        return liveRows;
       }
     } catch (error) {
       console.warn("Market data provider fallback:", error);
+      return buildFallbackCandidateRows(
+        symbols,
+        provider,
+        runtime,
+        observedAt,
+        includeMarketContext,
+        "provider_error",
+        "provider live error - fallback sample aktif",
+        [{
+          level: "high",
+          message: "Provider live belum bisa dipakai saat ini; data fallback hanya untuk observasi watchlist candidate.",
+        }],
+      );
     }
   }
 
-  const fallbackQuality: MarketDataQuality = runtime.mode === "sample" ? "sample" : "stale";
+  return buildFallbackCandidateRows(
+    symbols,
+    provider,
+    runtime,
+    observedAt,
+    includeMarketContext,
+    runtime.mode === "sample" ? "sample" : "fallback_sample",
+    runtime.mode === "sample"
+      ? runtime.providerStatus
+      : "provider live belum lengkap - fallback sample aktif",
+    runtime.riskWarning,
+  );
+}
+
+function buildFallbackCandidateRows(
+  symbols: SymbolRow[],
+  provider: ProviderSource,
+  runtime: ProviderRuntime,
+  observedAt: string,
+  includeMarketContext: boolean,
+  providerMode: ProviderMode,
+  providerStatus: string,
+  additionalWarnings: RiskWarning[],
+): MarketCandidateRows {
+  const fallbackQuality: MarketDataQuality = providerMode === "provider_error" ? "stale" : "sample";
   return {
     priceSnapshots: symbols.map((symbol) =>
       sampleQuote(symbol, observedAt, provider.provider_name, provider.id, fallbackQuality)
@@ -571,11 +628,10 @@ export async function buildMarketCandidateRows(
       ? sampleMarketContext(provider.provider_name, provider.id, observedAt, fallbackQuality)
       : null,
     dataQuality: fallbackQuality,
-    providerStatus: runtime.mode === "sample"
-      ? runtime.providerStatus
-      : "provider production belum mengembalikan data valid - fallback aman aktif",
-    riskWarning: buildRiskWarning(fallbackQuality, runtime.providerStatus, runtime.riskWarning),
-    usedProductionAdapter: false,
+    providerStatus,
+    riskWarning: buildRiskWarning(fallbackQuality, providerStatus, additionalWarnings),
+    usedLiveAdapter: false,
+    providerMode,
   };
 }
 
@@ -584,43 +640,62 @@ export async function buildMarketContextRow(
   runtime: ProviderRuntime,
   observedAt: string,
 ): Promise<MarketContextBuildResult> {
-  if (runtime.isProductionConfigured) {
+  if (runtime.isLiveConfigured) {
     try {
-      const marketContext = await fetchProductionMarketContext(provider, observedAt);
+      assertSupportedLiveAdapter(runtime);
+      const marketContext = await fetchLiveMarketContext(provider, observedAt);
       return {
         marketContext,
         dataQuality: marketContext.data_quality,
         providerStatus: marketContext.data_quality === "production"
           ? runtime.providerStatus
-          : "provider production aktif tetapi market context stale",
+          : "provider live aktif tetapi market context stale",
         riskWarning: buildRiskWarning(marketContext.data_quality, runtime.providerStatus, runtime.riskWarning),
-        usedProductionAdapter: true,
+        usedLiveAdapter: true,
+        providerMode: marketContext.data_quality === "production" ? "live" : "provider_error",
       };
     } catch (error) {
       console.warn("Market context provider fallback:", error);
+      const marketContext = sampleMarketContext(provider.provider_name, provider.id, observedAt, "stale");
+      const providerStatus = "provider live error - fallback sample aktif";
+      return {
+        marketContext,
+        dataQuality: "stale",
+        providerStatus,
+        riskWarning: buildRiskWarning("stale", providerStatus, [{
+          level: "high",
+          message: "Market context live belum tersedia; fallback stale digunakan.",
+        }]),
+        usedLiveAdapter: false,
+        providerMode: "provider_error",
+      };
     }
   }
 
-  const fallbackQuality: MarketDataQuality = runtime.mode === "sample" ? "sample" : "stale";
+  const providerMode: ProviderMode = runtime.mode === "sample" ? "sample" : "fallback_sample";
+  const fallbackQuality: MarketDataQuality = providerMode === "fallback_sample" ? "sample" : "stale";
   const marketContext = sampleMarketContext(provider.provider_name, provider.id, observedAt, fallbackQuality);
+  const providerStatus = runtime.mode === "sample"
+    ? runtime.providerStatus
+    : "provider live belum lengkap - fallback sample aktif";
   return {
     marketContext,
     dataQuality: fallbackQuality,
-    providerStatus: runtime.mode === "sample"
-      ? runtime.providerStatus
-      : "provider production belum mengembalikan market context valid - fallback aman aktif",
-    riskWarning: buildRiskWarning(fallbackQuality, runtime.providerStatus, runtime.riskWarning),
-    usedProductionAdapter: false,
+    providerStatus,
+    riskWarning: buildRiskWarning(fallbackQuality, providerStatus, runtime.riskWarning),
+    usedLiveAdapter: false,
+    providerMode,
   };
 }
 
-async function fetchProductionCandidateRows(
+async function fetchLiveCandidateRows(
   symbols: SymbolRow[],
   provider: ProviderSource,
   runtime: ProviderRuntime,
   observedAt: string,
   includeMarketContext: boolean,
 ): Promise<MarketCandidateRows> {
+  assertSupportedLiveAdapter(runtime);
   const quotePayload = await providerPostJson("/quotes", {
     symbol_codes: symbols.map((symbol) => symbol.symbol_code),
   });
@@ -678,10 +753,11 @@ async function fetchProductionCandidateRows(
     marketContext,
     dataQuality,
     providerStatus: hasFallback
-      ? "provider production aktif dengan sebagian data fallback"
+      ? "provider live aktif dengan sebagian data fallback"
       : runtime.providerStatus,
     riskWarning: buildRiskWarning(dataQuality, runtime.providerStatus, fallbackWarnings),
-    usedProductionAdapter: true,
+    usedLiveAdapter: true,
+    providerMode: hasFallback ? "provider_error" : "live",
   };
 }
 
@@ -730,7 +806,7 @@ function hasUsablePriceSnapshot(row: NormalizedPriceSnapshot): boolean {
   return row.last_price !== null || row.previous_close !== null || row.volume !== null;
 }
 
-async function fetchProductionMarketContext(
+async function fetchLiveMarketContext(
   provider: ProviderSource,
   observedAt: string,
 ): Promise<NormalizedMarketContext> {
@@ -765,6 +841,12 @@ async function fetchProductionMarketContext(
     is_stale: stale,
     staleness_warning: stale ? STALE_PROVIDER_WARNING : null,
   };
+}
+
+function assertSupportedLiveAdapter(runtime: ProviderRuntime): void {
+  if (runtime.providerAdapter !== "generic_json") {
+    throw new Error(`Unsupported live provider adapter: ${runtime.providerAdapter}`);
+  }
 }
 
 async function providerPostJson(pathKey: "/quotes" | "/market-context", body: Record<string, unknown>): Promise<unknown> {
@@ -831,9 +913,11 @@ export function sanitizeMarketContext(
   const rowProviderName = typeof row?.provider_name === "string" ? row.provider_name : null;
   const rowUsesFallbackProvider = Boolean(runtime && rowProviderName && rowProviderName !== runtime.activeProviderName);
   const providerStatus = dataQuality === "production"
-    ? runtime?.providerStatus ?? "provider production aktif"
+    ? runtime?.providerStatus ?? "provider live aktif"
+    : runtime?.mode === "live" || runtime?.mode === "provider_error"
+    ? "provider live belum mengembalikan data valid - fallback cache aktif"
     : rowUsesFallbackProvider
-    ? "provider production belum mengembalikan data valid - fallback cache aktif"
+    ? "provider live belum mengembalikan data valid - fallback cache aktif"
     : runtime?.providerStatus ?? "provider belum aktif atau cache stale";
 
   return {
