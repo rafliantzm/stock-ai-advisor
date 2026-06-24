@@ -61,10 +61,14 @@ Deno.serve(async (req) => {
     if (snapshotError) throw databaseError("Failed to load market context", snapshotError);
 
     let snapshot = snapshots?.[0] ?? null;
+    let providerMode = runtime.mode;
+    let providerStatusOverride: string | null = null;
 
     if (!snapshot && createSampleIfMissing) {
       const provider = await ensureProviderSource(supabase, runtime.activeProviderName, runtime.providerType);
       const builtContext = await buildMarketContextRow(provider, runtime, new Date().toISOString());
+      providerMode = builtContext.providerMode;
+      providerStatusOverride = builtContext.providerStatus;
       const { data: inserted, error: insertError } = await supabase
         .from("market_context_snapshots")
         .insert({
@@ -80,6 +84,12 @@ Deno.serve(async (req) => {
     }
 
     const marketContext = sanitizeMarketContext(snapshot, ttlSeconds, runtime);
+    if (providerStatusOverride) {
+      marketContext.provider_status = providerStatusOverride;
+    }
+    const effectiveProviderMode = marketContext.data_quality === "production" || runtime.mode !== "live"
+      ? providerMode
+      : "provider_error";
     const staleBlocked = marketContext.is_stale && !allowStale;
 
     return ok({
@@ -87,6 +97,7 @@ Deno.serve(async (req) => {
       provider: {
         ...providerMeta(runtime),
         provider_name: snapshot?.provider_name ?? runtime.activeProviderName,
+        provider_mode: effectiveProviderMode,
         provider_status: marketContext.provider_status,
       },
       cache: {
@@ -100,7 +111,7 @@ Deno.serve(async (req) => {
       data_quality: marketContext.data_quality,
       provider_name: snapshot?.provider_name ?? runtime.activeProviderName,
       provider_status: marketContext.provider_status,
-      provider_mode: runtime.mode,
+      provider_mode: effectiveProviderMode,
     });
   } catch (error) {
     return fail(error);

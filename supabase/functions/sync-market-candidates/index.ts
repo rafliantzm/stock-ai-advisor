@@ -121,7 +121,9 @@ Deno.serve(async (req) => {
               provider: providerMeta(runtime),
               provider_status: rows.providerStatus,
               data_quality: rows.dataQuality,
-              used_production_adapter: rows.usedProductionAdapter,
+              used_production_adapter: rows.usedLiveAdapter,
+              used_live_adapter: rows.usedLiveAdapter,
+              provider_mode: rows.providerMode,
               contract_version: "p2_market_data_provider_contract_v1",
             },
           })
@@ -135,7 +137,7 @@ Deno.serve(async (req) => {
             provider_name: provider.provider_name,
             provider_type: provider.provider_type,
             status: provider.status,
-            provider_mode: runtime.mode,
+            provider_mode: rows.providerMode,
           },
           synced_symbols: symbols.map((symbol) => ({
             symbol_id: symbol.id,
@@ -152,7 +154,7 @@ Deno.serve(async (req) => {
           data_quality: rows.dataQuality,
           provider_name: provider.provider_name,
           provider_status: rows.providerStatus,
-          provider_mode: runtime.mode,
+          provider_mode: rows.providerMode,
         });
       }
 

@@ -6,6 +6,7 @@ class ProviderInfo {
     required this.providerName,
     required this.providerStatus,
     this.providerType,
+    this.providerMode,
     this.status,
   });
 
@@ -17,6 +18,7 @@ class ProviderInfo {
           map['status']?.toString() ??
           'provider belum aktif',
       providerType: map['provider_type']?.toString(),
+      providerMode: map['provider_mode']?.toString(),
       status: map['status']?.toString(),
     );
   }
@@ -24,6 +26,7 @@ class ProviderInfo {
   final String providerName;
   final String providerStatus;
   final String? providerType;
+  final String? providerMode;
   final String? status;
 }
 
@@ -132,6 +135,7 @@ class MarketDataMeta {
     required this.dataQuality,
     required this.providerName,
     required this.providerStatus,
+    this.providerMode,
     this.ruleVersion,
   });
 
@@ -141,6 +145,7 @@ class MarketDataMeta {
       providerName: map['provider_name']?.toString() ?? 'sample_provider',
       providerStatus:
           map['provider_status']?.toString() ?? 'provider belum aktif',
+      providerMode: map['provider_mode']?.toString(),
       ruleVersion: map['rule_version']?.toString(),
     );
   }
@@ -148,6 +153,7 @@ class MarketDataMeta {
   final String dataQuality;
   final String providerName;
   final String providerStatus;
+  final String? providerMode;
   final String? ruleVersion;
 }
 
