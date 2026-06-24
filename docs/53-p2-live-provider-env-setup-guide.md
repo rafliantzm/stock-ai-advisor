@@ -43,12 +43,12 @@ Expected:
 ```text
 MARKET_DATA_PROVIDER_MODE=live
 MARKET_DATA_PROVIDER_ADAPTER=generic_json
-MARKET_DATA_PROVIDER_NAME=provider_name
-MARKET_DATA_API_BASE_URL=https://provider.example
-MARKET_DATA_API_KEY=secret_value
+MARKET_DATA_PROVIDER=provider_name
+MARKET_DATA_PROVIDER_BASE_URL=https://provider.example
+MARKET_DATA_PROVIDER_API_KEY=secret_value
 ```
 
-Set these as Supabase Edge Function secrets only. Keep `MARKET_DATA_API_KEY` out of Flutter, mobile build config, public docs, and committed files.
+Set these as Supabase Edge Function secrets only. Keep `MARKET_DATA_PROVIDER_API_KEY` out of Flutter, mobile build config, public docs, screenshots, and committed files.
 
 Optional:
 
@@ -57,6 +57,7 @@ MARKET_DATA_QUOTES_PATH=/quotes
 MARKET_DATA_CONTEXT_PATH=/market-context
 MARKET_DATA_API_KEY_HEADER=Authorization
 MARKET_DATA_API_KEY_PREFIX=Bearer
+MARKET_DATA_PROVIDER_METHOD=POST
 MARKET_DATA_CACHE_TTL_SECONDS=900
 MARKET_DATA_SYNC_TOKEN=random-long-secret
 ```
@@ -64,6 +65,7 @@ MARKET_DATA_SYNC_TOKEN=random-long-secret
 Notes:
 
 - `MARKET_DATA_PROVIDER_MODE=production` is still accepted as a legacy alias for `live`.
+- `MARKET_DATA_PROVIDER_NAME`, `MARKET_DATA_API_BASE_URL`, and `MARKET_DATA_API_KEY` are still accepted as legacy aliases.
 - `MARKET_DATA_PROVIDER_ADAPTER` currently supports `generic_json`.
 - Unsupported adapter names return fallback with `provider_mode = provider_error`.
 - `MARKET_DATA_SYNC_TOKEN` is optional and only used for backend scheduled sync calls.
@@ -74,15 +76,24 @@ Notes:
 | --- | --- | --- | --- |
 | `MARKET_DATA_PROVIDER_MODE` | Yes | No | `sample` or `live` |
 | `MARKET_DATA_PROVIDER_ADAPTER` | No | No | Default `generic_json` |
-| `MARKET_DATA_PROVIDER_NAME` | Yes | No | Provider label stored in cache metadata |
-| `MARKET_DATA_API_BASE_URL` | Live only | No, but backend-only | Provider base URL |
-| `MARKET_DATA_API_KEY` | Live only | Yes | Provider credential |
+| `MARKET_DATA_PROVIDER` | Yes | No | Provider label stored in cache metadata |
+| `MARKET_DATA_PROVIDER_BASE_URL` | Live only | No, but backend-only | Provider base URL |
+| `MARKET_DATA_PROVIDER_API_KEY` | Live only | Yes | Provider credential |
 | `MARKET_DATA_QUOTES_PATH` | No | No | Quote endpoint path |
 | `MARKET_DATA_CONTEXT_PATH` | No | No | Market context endpoint path |
 | `MARKET_DATA_API_KEY_HEADER` | No | No | Header name for provider auth |
 | `MARKET_DATA_API_KEY_PREFIX` | No | No | Header prefix, default `Bearer` |
+| `MARKET_DATA_PROVIDER_METHOD` | No | No | `POST` default, `GET` supported |
 | `MARKET_DATA_CACHE_TTL_SECONDS` | No | No | Cache freshness threshold |
 | `MARKET_DATA_SYNC_TOKEN` | No | Yes | Optional backend sync token |
+
+Legacy aliases:
+
+| New Env | Legacy Alias |
+| --- | --- |
+| `MARKET_DATA_PROVIDER` | `MARKET_DATA_PROVIDER_NAME` |
+| `MARKET_DATA_PROVIDER_BASE_URL` | `MARKET_DATA_API_BASE_URL` |
+| `MARKET_DATA_PROVIDER_API_KEY` | `MARKET_DATA_API_KEY` |
 
 ## Generic JSON Adapter Contract
 
@@ -152,13 +163,13 @@ Market context response can be:
 | --- | --- | --- |
 | Sample env | `sample` | `sample` |
 | Live env missing key/base URL | `fallback_sample` | `sample` |
-| Live env complete and payload valid | `live` | `production` |
+| Live env complete and payload valid | `live` | `live` or `delayed` |
 | Live env complete but provider unavailable | `provider_error` | `stale` |
 | Live env complete but payload missing price/volume | `provider_error` | `stale` |
 
 ## Security Checklist
 
-- Do not put `MARKET_DATA_API_KEY` in Flutter.
+- Do not put `MARKET_DATA_PROVIDER_API_KEY` or `MARKET_DATA_API_KEY` in Flutter.
 - Do not put service role key in Flutter.
 - Do not commit provider secrets.
 - Do not store provider auth headers, cookies, tokens, or credentials in `raw_payload`.
@@ -215,7 +226,7 @@ Invoke-RestMethod `
 Expected safe response:
 
 - `ok = true`
-- `data.data_quality` is `sample`, `stale`, or `production`
+- `data.data_quality` is `sample`, `stale`, `live`, or `delayed`
 - `meta.provider_mode` is `sample`, `live`, `fallback_sample`, or `provider_error`
 - `risk_warning` appears when data is sample/stale
 - no provider secret is returned
