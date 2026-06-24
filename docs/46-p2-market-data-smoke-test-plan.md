@@ -297,3 +297,22 @@ P2 schema foundation dianggap lolos smoke test jika:
 3. Buat Edge Function `get-market-context`.
 4. Buat Edge Function `get-stock-quote`.
 5. Tambahkan Flutter adapter read-only setelah endpoint P2 stabil.
+
+## P2 Market Data Smoke Test Result
+
+Status: PASS
+
+Actual Result:
+- provider_sources: 1 row
+- provider_sync_runs: 1 row, status success
+- market_price_snapshots: 5 rows
+- technical_indicator_snapshots: 5 rows
+- market_context_snapshots: 1 row
+- news_items: 0 rows, expected because news provider is not active
+- sync-market-candidates returned ok true
+- get-market-context returned ok true
+- data_quality is sample
+- provider production is not active yet
+
+Conclusion:
+P2 market data sample sync is working correctly. The provider is still sample-based, but the schema, Edge Functions, database writes, and market context response are valid for P2 foundation.
