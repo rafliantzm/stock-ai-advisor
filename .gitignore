@@ -1,0 +1,114 @@
+# OS and editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+
+# Flutter and Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+coverage/
+*.lockfile
+
+# Keep Flutter lockfiles when an app is created
+!apps/**/pubspec.lock
+
+# Android
+**/android/.gradle/
+**/android/app/build/
+**/android/local.properties
+**/android/key.properties
+**/android/*.jks
+**/android/*.keystore
+
+# iOS and macOS generated files
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/Flutter/App.framework
+**/ios/Flutter/Flutter.framework
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Runner.xcworkspace/
+**/macos/Flutter/ephemeral/
+**/macos/Pods/
+
+# Windows and Linux Flutter generated files
+**/windows/flutter/ephemeral/
+**/linux/flutter/ephemeral/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+dist/
+*.egg-info/
+
+# Supabase
+supabase/.branches/
+supabase/.temp/
+supabase/.env
+supabase/.env.*
+
+# Local books and data
+data/books/**/*
+!data/books/.gitkeep
+data/market/**/*
+!data/market/.gitkeep
+
+# Generated book pipeline outputs
+data/extracted_text/**/*
+!data/extracted_text/.gitkeep
+data/chunks/**/*
+!data/chunks/.gitkeep
+data/theory_cards/**/*
+!data/theory_cards/.gitkeep
+data/theory_clusters/**/*
+!data/theory_clusters/.gitkeep
+data/rules/**/*
+!data/rules/.gitkeep
+data/backtest_results/**/*
+!data/backtest_results/.gitkeep
+
+# Generated RAG and model artifacts
+*.faiss
+*.sqlite
+*.sqlite3
+*.db
+*.parquet
+*.feather
+*.pkl
+*.pickle
+
+# Logs and reports
+logs/
+*.log
+reports/generated/
+
+# Large archives
+*.zip
+*.tar
+*.tar.gz
+*.7z
+*.rar
