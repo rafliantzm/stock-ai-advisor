@@ -22,7 +22,7 @@ export type SymbolRow = {
   currency: string;
 };
 
-export type MarketDataQuality = "sample" | "stale" | "production";
+export type MarketDataQuality = "sample" | "stale" | "live" | "delayed" | "production";
 
 export type ProviderRuntime = {
   requestedProviderName: string;
@@ -166,9 +166,17 @@ type ProviderQuoteResponse = {
   symbol_code?: unknown;
   symbol?: unknown;
   provider_symbol?: unknown;
+  company_name?: unknown;
+  name?: unknown;
   observed_at?: unknown;
+  source_time?: unknown;
+  timestamp?: unknown;
+  time?: unknown;
+  date?: unknown;
   last_price?: unknown;
   price?: unknown;
+  close_price?: unknown;
+  close?: unknown;
   previous_close?: unknown;
   open_price?: unknown;
   open?: unknown;
@@ -183,6 +191,8 @@ type ProviderQuoteResponse = {
   value_traded?: unknown;
   market_cap?: unknown;
   currency?: unknown;
+  data_quality?: unknown;
+  is_delayed?: unknown;
 };
 
 export const DEFAULT_PROVIDER_NAME = "sample_provider";
@@ -193,7 +203,7 @@ export const STALE_PROVIDER_WARNING = "provider live belum menghasilkan data bar
 const CONTRACT_VERSION = "p2_market_data_live_provider_contract_v1";
 
 export function marketProviderName(): string {
-  return Deno.env.get("MARKET_DATA_PROVIDER_NAME")?.trim() || DEFAULT_PROVIDER_NAME;
+  return envFirst(["MARKET_DATA_PROVIDER", "MARKET_DATA_PROVIDER_NAME"]) || DEFAULT_PROVIDER_NAME;
 }
 
 export function marketCacheTtlSeconds(): number {
@@ -207,10 +217,7 @@ export function resolveProviderRuntime(): ProviderRuntime {
   const requestedMode = normalizeProviderMode(Deno.env.get("MARKET_DATA_PROVIDER_MODE"));
   const providerAdapter = liveProviderAdapterName();
   const wantsLive = requestedMode === "live" || requestedProviderName !== DEFAULT_PROVIDER_NAME;
-  const requiredEnv = ["MARKET_DATA_PROVIDER_NAME", "MARKET_DATA_API_BASE_URL", "MARKET_DATA_API_KEY"];
-  const missingEnv = wantsLive
-    ? requiredEnv.filter((name) => !Deno.env.get(name)?.trim())
-    : [];
+  const missingEnv = wantsLive ? missingLiveProviderConfigNames() : [];
 
   if (!wantsLive) {
     return {
@@ -255,7 +262,7 @@ export function resolveProviderRuntime(): ProviderRuntime {
     activeProviderName: requestedProviderName,
     providerType: "vendor",
     mode: "live",
-    dataQuality: "production",
+    dataQuality: "live",
     providerStatus: "provider live aktif melalui Edge Function",
     providerAdapter,
     cacheTtlSeconds: marketCacheTtlSeconds(),
@@ -273,6 +280,22 @@ function normalizeProviderMode(value: string | undefined | null): "sample" | "li
 
 function liveProviderAdapterName(): string {
   return Deno.env.get("MARKET_DATA_PROVIDER_ADAPTER")?.trim().toLowerCase() || "generic_json";
+}
+
+function envFirst(names: string[]): string | null {
+  for (const name of names) {
+    const value = Deno.env.get(name)?.trim();
+    if (value) return value;
+  }
+  return null;
+}
+
+function missingLiveProviderConfigNames(): string[] {
+  const missing: string[] = [];
+  if (!envFirst(["MARKET_DATA_PROVIDER", "MARKET_DATA_PROVIDER_NAME"])) missing.push("provider");
+  if (!envFirst(["MARKET_DATA_PROVIDER_BASE_URL", "MARKET_DATA_API_BASE_URL"])) missing.push("base_url");
+  if (!envFirst(["MARKET_DATA_PROVIDER_API_KEY", "MARKET_DATA_API_KEY"])) missing.push("api_key");
+  return missing;
 }
 
 export function providerMeta(runtime: ProviderRuntime) {
@@ -293,7 +316,7 @@ export function buildRiskWarning(
   providerStatus: string,
   additional: RiskWarning[] = [],
 ): RiskWarning[] {
-  if (quality === "production") return additional;
+  if (isProviderFreshQuality(quality)) return additional;
   const baseMessage = quality === "sample"
     ? "Data masih sample; gunakan hanya untuk observasi watchlist candidate."
     : "Data stale; cek ulang sebelum memakai hasil analisis.";
@@ -411,6 +434,10 @@ function round(value: number, digits = 2): number {
   return Math.round(value * factor) / factor;
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, round(value, 2)));
+}
+
 function nullableNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
   const parsed = Number(value);
@@ -425,10 +452,31 @@ function nullableString(value: unknown): string | null {
 
 function normalizeQuality(value: unknown, stale: boolean): MarketDataQuality {
   if (stale) return "stale";
+  if (value === "live") return "live";
+  if (value === "delayed") return "delayed";
   if (value === "production") return "production";
-  if (value === "realtime" || value === "delayed" || value === "computed") return "production";
+  if (value === "realtime" || value === "computed") return "live";
   if (value === "stale") return "stale";
   return "sample";
+}
+
+function normalizeProviderDataQuality(value: unknown, stale: boolean, delayed: boolean): MarketDataQuality {
+  if (stale) return "stale";
+  const normalized = value?.toString().trim().toLowerCase();
+  if (normalized === "delayed" || delayed) return "delayed";
+  if (normalized === "live" || normalized === "realtime" || normalized === "production") return "live";
+  return "live";
+}
+
+function isProviderFreshQuality(value: MarketDataQuality): boolean {
+  return value === "live" || value === "delayed" || value === "production";
+}
+
+function mergeProviderQualities(values: MarketDataQuality[]): MarketDataQuality {
+  if (values.includes("stale")) return "stale";
+  if (values.includes("sample") || values.length === 0) return "sample";
+  if (values.includes("delayed")) return "delayed";
+  return "live";
 }
 
 export function sampleQuote(
@@ -443,7 +491,7 @@ export function sampleQuote(
   const changePercent = round(((seed % 9) - 4) * 0.42, 2);
   const lastPrice = round(previousClose * (1 + changePercent / 100), 2);
   const spread = Math.max(5, previousClose * 0.012);
-  const stale = dataQuality !== "production";
+  const stale = !isProviderFreshQuality(dataQuality);
 
   return {
     symbol_id: symbol.id,
@@ -518,7 +566,7 @@ export function sampleIndicator(
     volume_score: volumeScore,
     risk_score: riskScore,
     invalidation_level: invalidationLevel,
-    rule_version: dataQuality === "production" ? "p2_provider_indicator_contract_v1" : "p2_sample_indicator_v1",
+    rule_version: isProviderFreshQuality(dataQuality) ? "p2_provider_indicator_contract_v1" : "p2_sample_indicator_v1",
     data_quality: dataQuality,
   };
 }
@@ -529,7 +577,7 @@ export function sampleMarketContext(
   observedAt: string,
   dataQuality: MarketDataQuality = "sample",
 ): NormalizedMarketContext {
-  const stale = dataQuality !== "production";
+  const stale = !isProviderFreshQuality(dataQuality);
   return {
     provider_source_id: providerSourceId,
     provider_name: providerName,
@@ -540,16 +588,16 @@ export function sampleMarketContext(
     index_change: null,
     index_change_percent: null,
     index_trend: "needs_more_data",
-    market_status: dataQuality === "production" ? "provider aktif" : "provider belum aktif",
+    market_status: isProviderFreshQuality(dataQuality) ? "provider aktif" : "provider belum aktif",
     risk_regime: "needs_more_data",
     breadth_summary: {
-      source: dataQuality === "production" ? "provider_contract" : "sample data",
-      note: dataQuality === "production"
+      source: isProviderFreshQuality(dataQuality) ? "provider_contract" : "sample data",
+      note: isProviderFreshQuality(dataQuality)
         ? "Market breadth mengikuti kontrak provider yang dinormalisasi."
         : "Market breadth provider belum aktif.",
     },
     context_payload: {
-      label: dataQuality === "production" ? "provider data" : "sample data",
+      label: isProviderFreshQuality(dataQuality) ? "provider data" : "sample data",
       contract_version: CONTRACT_VERSION,
       disclaimer: "Data market context hanya untuk edukasi.",
     },
@@ -656,12 +704,12 @@ export async function buildMarketContextRow(
       return {
         marketContext,
         dataQuality: marketContext.data_quality,
-        providerStatus: marketContext.data_quality === "production"
+        providerStatus: isProviderFreshQuality(marketContext.data_quality)
           ? runtime.providerStatus
           : "provider live aktif tetapi market context stale",
         riskWarning: buildRiskWarning(marketContext.data_quality, runtime.providerStatus, runtime.riskWarning),
         usedLiveAdapter: true,
-        providerMode: marketContext.data_quality === "production" ? "live" : "provider_error",
+        providerMode: isProviderFreshQuality(marketContext.data_quality) ? "live" : "provider_error",
       };
     } catch (error) {
       console.warn("Market context provider fallback:", error);
@@ -748,7 +796,7 @@ async function fetchLiveCandidateRows(
     }
 
     priceSnapshots.push(normalizedQuote);
-    technicalIndicators.push(sampleIndicator(symbol, observedAt, provider.provider_name, provider.id, "stale"));
+    technicalIndicators.push(providerIndicatorFromQuote(symbol, normalizedQuote, provider));
   }
 
   const marketContext = includeMarketContext
@@ -757,9 +805,13 @@ async function fetchLiveCandidateRows(
     )
     : null;
 
-  const hasFallback = fallbackWarnings.length > 0 || technicalIndicators.some((row) => row.data_quality !== "production") ||
-    Boolean(marketContext && marketContext.data_quality !== "production");
-  const dataQuality: MarketDataQuality = hasFallback ? "stale" : "production";
+  const hasFallback = fallbackWarnings.length > 0 || technicalIndicators.some((row) => !isProviderFreshQuality(row.data_quality)) ||
+    Boolean(marketContext && !isProviderFreshQuality(marketContext.data_quality));
+  const dataQuality = hasFallback ? "stale" : mergeProviderQualities([
+    ...priceSnapshots.map((row) => row.data_quality),
+    ...technicalIndicators.map((row) => row.data_quality),
+    ...(marketContext ? [marketContext.data_quality] : []),
+  ]);
 
   return {
     priceSnapshots,
@@ -781,10 +833,11 @@ function normalizeProviderQuote(
   fallbackObservedAt: string,
   provider: ProviderSource,
 ): NormalizedPriceSnapshot {
-  const observedAt = nullableString(item.observed_at) ?? fallbackObservedAt;
+  const observedAt = nullableString(item.source_time) ?? nullableString(item.observed_at) ??
+    nullableString(item.timestamp) ?? nullableString(item.time) ?? nullableString(item.date) ?? fallbackObservedAt;
   const stale = isStale(observedAt, provider.cache_ttl_seconds);
-  const dataQuality = normalizeQuality("production", stale);
-  const lastPrice = nullableNumber(item.last_price ?? item.price);
+  const dataQuality = normalizeProviderDataQuality(item.data_quality, stale, item.is_delayed === true);
+  const lastPrice = nullableNumber(item.last_price ?? item.price ?? item.close_price ?? item.close);
   const previousClose = nullableNumber(item.previous_close);
 
   return {
@@ -811,8 +864,57 @@ function normalizeProviderQuote(
     raw_payload: {
       source: "normalized_provider",
       contract_version: CONTRACT_VERSION,
+      company_name: nullableString(item.company_name ?? item.name),
+      source_time: observedAt,
       note: "provider payload normalized; raw response is not exposed",
     },
+  };
+}
+
+function providerIndicatorFromQuote(
+  symbol: SymbolRow,
+  quote: NormalizedPriceSnapshot,
+  provider: ProviderSource,
+): NormalizedTechnicalIndicator {
+  const changePercent = quote.change_percent ?? (
+    quote.last_price !== null && quote.previous_close !== null && quote.previous_close !== 0
+      ? ((quote.last_price - quote.previous_close) / quote.previous_close) * 100
+      : null
+  );
+  const technicalScore = changePercent === null ? null : clamp(50 + changePercent * 5, 0, 100);
+  const riskScore = changePercent === null ? null : clamp(85 - Math.abs(changePercent) * 6, 0, 100);
+  const invalidationLevel = quote.last_price === null ? null : round(quote.last_price * 0.97, 2);
+
+  return {
+    symbol_id: symbol.id,
+    symbol_code: symbol.symbol_code,
+    provider_source_id: provider.id,
+    provider_name: provider.provider_name,
+    timeframe: "1d",
+    observed_at: quote.observed_at,
+    ema_20: null,
+    ema_50: null,
+    ema_200: null,
+    rsi_14: null,
+    atr_14: null,
+    average_volume_20: null,
+    volume_ratio: null,
+    support_level: quote.low_price,
+    resistance_level: quote.high_price,
+    trend_state: changePercent === null ? "needs_more_data" : changePercent >= 0 ? "watchlist_context_positive" : "risk_warning_context",
+    candlestick_pattern: null,
+    indicator_payload: {
+      source: "live_quote_minimal",
+      contract_version: CONTRACT_VERSION,
+      note: "Minimal technical snapshot from provider quote only; OHLCV indicators pending.",
+    },
+    technical_score: technicalScore,
+    trend_score: technicalScore,
+    volume_score: quote.volume === null ? null : clamp(45 + Math.log10(Math.max(quote.volume, 1)), 0, 100),
+    risk_score: riskScore,
+    invalidation_level: invalidationLevel,
+    rule_version: "p2_live_quote_indicator_v1",
+    data_quality: quote.data_quality,
   };
 }
 
@@ -829,9 +931,10 @@ async function fetchLiveMarketContext(
     index_symbol: DEFAULT_INDEX_SYMBOL,
   });
   const context = extractRecordPayload(payload, ["market_context", "context", "data"]);
-  const contextObservedAt = nullableString(context.observed_at) ?? observedAt;
+  const contextObservedAt = nullableString(context.source_time) ?? nullableString(context.observed_at) ??
+    nullableString(context.timestamp) ?? nullableString(context.time) ?? nullableString(context.date) ?? observedAt;
   const stale = isStale(contextObservedAt, provider.cache_ttl_seconds);
-  const dataQuality = normalizeQuality("production", stale);
+  const dataQuality = normalizeProviderDataQuality(context.data_quality, stale, context.is_delayed === true);
 
   return {
     provider_source_id: provider.id,
@@ -839,9 +942,9 @@ async function fetchLiveMarketContext(
     market_code: nullableString(context.market_code) ?? DEFAULT_MARKET_CODE,
     index_symbol: nullableString(context.index_symbol) ?? DEFAULT_INDEX_SYMBOL,
     observed_at: contextObservedAt,
-    index_last: nullableNumber(context.index_last),
-    index_change: nullableNumber(context.index_change),
-    index_change_percent: nullableNumber(context.index_change_percent),
+    index_last: nullableNumber(context.index_last ?? context.last_price ?? context.price ?? context.close_price ?? context.close),
+    index_change: nullableNumber(context.index_change ?? context.change_value ?? context.change),
+    index_change_percent: nullableNumber(context.index_change_percent ?? context.change_percent),
     index_trend: nullableString(context.index_trend) ?? "needs_more_data",
     market_status: nullableString(context.market_status) ?? "provider aktif",
     risk_regime: nullableString(context.risk_regime) ?? "needs_more_data",
@@ -864,8 +967,8 @@ function assertSupportedLiveAdapter(runtime: ProviderRuntime): void {
 }
 
 async function providerPostJson(pathKey: "/quotes" | "/market-context", body: Record<string, unknown>): Promise<unknown> {
-  const baseUrl = Deno.env.get("MARKET_DATA_API_BASE_URL")?.trim();
-  const apiKey = Deno.env.get("MARKET_DATA_API_KEY")?.trim();
+  const baseUrl = envFirst(["MARKET_DATA_PROVIDER_BASE_URL", "MARKET_DATA_API_BASE_URL"]);
+  const apiKey = envFirst(["MARKET_DATA_PROVIDER_API_KEY", "MARKET_DATA_API_KEY"]);
   if (!baseUrl || !apiKey) throw new Error("Market data provider env is incomplete");
 
   const pathEnv = pathKey === "/quotes" ? "MARKET_DATA_QUOTES_PATH" : "MARKET_DATA_CONTEXT_PATH";
@@ -874,17 +977,27 @@ async function providerPostJson(pathKey: "/quotes" | "/market-context", body: Re
   const headerName = Deno.env.get("MARKET_DATA_API_KEY_HEADER")?.trim() || "Authorization";
   const headerValuePrefix = Deno.env.get("MARKET_DATA_API_KEY_PREFIX")?.trim() ?? "Bearer";
   const authValue = headerValuePrefix ? `${headerValuePrefix} ${apiKey}` : apiKey;
+  const method = (Deno.env.get("MARKET_DATA_PROVIDER_METHOD")?.trim().toUpperCase() || "POST") === "GET" ? "GET" : "POST";
+  if (method === "GET") {
+    for (const [key, value] of Object.entries(body)) {
+      if (Array.isArray(value)) {
+        url.searchParams.set(key, value.join(","));
+      } else if (value !== null && value !== undefined) {
+        url.searchParams.set(key, value.toString());
+      }
+    }
+  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
   try {
     const response = await fetch(url, {
-      method: "POST",
+      method,
       headers: {
         "Content-Type": "application/json",
         [headerName]: authValue,
       },
-      body: JSON.stringify(body),
+      body: method === "POST" ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
     if (!response.ok) throw new Error(`Provider returned HTTP ${response.status}`);
@@ -900,15 +1013,27 @@ function extractArrayPayload(payload: unknown, keys: string[]): unknown[] {
   for (const key of keys) {
     const value = payload[key];
     if (Array.isArray(value)) return value;
+    if (isRecord(value)) {
+      const nested = extractArrayPayload(value, keys);
+      if (nested.length > 0) return nested;
+    }
   }
   return [];
 }
 
 function extractRecordPayload(payload: unknown, keys: string[]): Record<string, unknown> {
+  if (Array.isArray(payload)) {
+    const first = payload.find(isRecord);
+    return first ?? {};
+  }
   if (!isRecord(payload)) return {};
   for (const key of keys) {
     const value = payload[key];
     if (isRecord(value)) return value;
+    if (Array.isArray(value)) {
+      const first = value.find(isRecord);
+      if (first) return first;
+    }
   }
   return payload;
 }
@@ -926,7 +1051,7 @@ export function sanitizeMarketContext(
   const dataQuality = normalizeQuality(row?.data_quality, stale);
   const rowProviderName = typeof row?.provider_name === "string" ? row.provider_name : null;
   const rowUsesFallbackProvider = Boolean(runtime && rowProviderName && rowProviderName !== runtime.activeProviderName);
-  const providerStatus = dataQuality === "production"
+  const providerStatus = isProviderFreshQuality(dataQuality)
     ? runtime?.providerStatus ?? "provider live aktif"
     : runtime?.mode === "live" || runtime?.mode === "provider_error"
     ? "provider live belum mengembalikan data valid - fallback cache aktif"
@@ -955,20 +1080,20 @@ export function sanitizeMarketContext(
 export function toPriceSnapshotDbRow(row: NormalizedPriceSnapshot) {
   return {
     ...row,
-    data_quality: row.data_quality === "production" ? "realtime" : row.data_quality,
+    data_quality: row.data_quality === "live" || row.data_quality === "production" ? "realtime" : row.data_quality,
   };
 }
 
 export function toTechnicalIndicatorDbRow(row: NormalizedTechnicalIndicator) {
   return {
     ...row,
-    data_quality: row.data_quality === "production" ? "computed" : row.data_quality,
+    data_quality: isProviderFreshQuality(row.data_quality) ? "computed" : row.data_quality,
   };
 }
 
 export function toMarketContextDbRow(row: NormalizedMarketContext) {
   return {
     ...row,
-    data_quality: row.data_quality === "production" ? "realtime" : row.data_quality,
+    data_quality: row.data_quality === "live" || row.data_quality === "production" ? "realtime" : row.data_quality,
   };
 }

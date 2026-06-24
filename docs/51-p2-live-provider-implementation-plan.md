@@ -19,7 +19,7 @@ Mode yang dikembalikan oleh Edge Functions:
 | Mode | Arti | Data Quality |
 | --- | --- | --- |
 | `sample` | Provider live belum diminta; memakai sample provider | `sample` |
-| `live` | Provider live aktif dan payload valid | `production` |
+| `live` | Provider live aktif dan payload valid | `live` atau `delayed` |
 | `fallback_sample` | Mode live diminta tetapi env belum lengkap; memakai sample provider | `sample` |
 | `provider_error` | Env live lengkap tetapi provider gagal/invalid/stale; memakai fallback aman | `stale` |
 
@@ -34,6 +34,8 @@ MARKET_DATA_PROVIDER_ADAPTER=generic_json
 ```
 
 Adapter default adalah `generic_json`. Adapter ini mengirim request POST ke path quotes dan market context, lalu menormalkan payload ke kontrak internal.
+
+Adapter juga mendukung `MARKET_DATA_PROVIDER_METHOD=GET` untuk provider yang membutuhkan query string.
 
 Adapter selain `generic_json` belum diaktifkan. Jika env memakai adapter yang belum didukung, function akan turun ke `provider_error` dan memakai fallback aman.
 
@@ -116,12 +118,12 @@ Response tetap kompatibel dengan Flutter P2:
 {
   "ok": true,
   "data": {
-    "data_quality": "sample | stale | production",
+    "data_quality": "sample | stale | live | delayed",
     "provider_status": "string",
     "risk_warning": []
   },
   "meta": {
-    "data_quality": "sample | stale | production",
+    "data_quality": "sample | stale | live | delayed",
     "provider_mode": "sample | live | fallback_sample | provider_error"
   }
 }

@@ -91,7 +91,8 @@ Deno.serve(async (req) => {
     if (providerStatusOverride) {
       marketContext.provider_status = providerStatusOverride;
     }
-    const effectiveProviderMode = marketContext.data_quality === "production" || runtime.mode !== "live"
+    const hasFreshProviderContext = ["live", "delayed", "production"].includes(marketContext.data_quality?.toString());
+    const effectiveProviderMode = hasFreshProviderContext || runtime.mode !== "live"
       ? providerMode
       : "provider_error";
     const staleBlocked = marketContext.is_stale && !allowStale;
