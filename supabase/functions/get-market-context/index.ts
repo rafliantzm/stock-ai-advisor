@@ -5,13 +5,15 @@ import { databaseError, methodNotAllowed } from "../_shared/errors.ts";
 import { fail, ok } from "../_shared/response.ts";
 import {
   boolFromUnknown,
+  buildMarketContextRow,
   DEFAULT_INDEX_SYMBOL,
   DEFAULT_MARKET_CODE,
   ensureProviderSource,
   marketCacheTtlSeconds,
-  marketProviderName,
-  sampleMarketContext,
+  providerMeta,
+  resolveProviderRuntime,
   sanitizeMarketContext,
+  toMarketContextDbRow,
 } from "../_shared/marketData.ts";
 
 type MarketContextBody = {
@@ -45,7 +47,7 @@ Deno.serve(async (req) => {
     );
 
     const supabase = createAdminClient();
-    const providerName = marketProviderName();
+    const runtime = resolveProviderRuntime();
     const ttlSeconds = marketCacheTtlSeconds();
 
     const { data: snapshots, error: snapshotError } = await supabase
@@ -61,12 +63,12 @@ Deno.serve(async (req) => {
     let snapshot = snapshots?.[0] ?? null;
 
     if (!snapshot && createSampleIfMissing) {
-      const provider = await ensureProviderSource(supabase, providerName);
-      const sample = sampleMarketContext(provider.provider_name, provider.id, new Date().toISOString());
+      const provider = await ensureProviderSource(supabase, runtime.activeProviderName, runtime.providerType);
+      const builtContext = await buildMarketContextRow(provider, runtime, new Date().toISOString());
       const { data: inserted, error: insertError } = await supabase
         .from("market_context_snapshots")
         .insert({
-          ...sample,
+          ...toMarketContextDbRow(builtContext.marketContext),
           market_code: marketCode,
           index_symbol: indexSymbol,
         })
@@ -77,14 +79,15 @@ Deno.serve(async (req) => {
       snapshot = inserted;
     }
 
-    const marketContext = sanitizeMarketContext(snapshot, ttlSeconds);
+    const marketContext = sanitizeMarketContext(snapshot, ttlSeconds, runtime);
     const staleBlocked = marketContext.is_stale && !allowStale;
 
     return ok({
       market_context: marketContext,
       provider: {
-        provider_name: snapshot?.provider_name ?? providerName,
-        provider_status: marketContext.data_quality === "sample" ? "provider belum aktif" : "provider configured",
+        ...providerMeta(runtime),
+        provider_name: snapshot?.provider_name ?? runtime.activeProviderName,
+        provider_status: marketContext.provider_status,
       },
       cache: {
         allow_stale: allowStale,
@@ -95,8 +98,9 @@ Deno.serve(async (req) => {
         "Market context bersifat edukatif untuk watchlist candidate, risk warning, dan invalidation level; bukan instruksi transaksi.",
     }, {
       data_quality: marketContext.data_quality,
-      provider_name: snapshot?.provider_name ?? providerName,
-      provider_status: marketContext.data_quality === "sample" ? "provider belum aktif" : "provider configured",
+      provider_name: snapshot?.provider_name ?? runtime.activeProviderName,
+      provider_status: marketContext.provider_status,
+      provider_mode: runtime.mode,
     });
   } catch (error) {
     return fail(error);

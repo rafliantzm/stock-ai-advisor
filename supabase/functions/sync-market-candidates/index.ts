@@ -5,14 +5,16 @@ import { fail, ok } from "../_shared/response.ts";
 import {
   authorizeSyncRequest,
   boolFromUnknown,
+  buildMarketCandidateRows,
   ensureProviderSource,
   loadSymbols,
-  marketProviderName,
   normalizeSymbolCodes,
   numberFromUnknown,
-  sampleIndicator,
-  sampleMarketContext,
-  sampleQuote,
+  providerMeta,
+  resolveProviderRuntime,
+  toMarketContextDbRow,
+  toPriceSnapshotDbRow,
+  toTechnicalIndicatorDbRow,
 } from "../_shared/marketData.ts";
 
 type SyncMarketCandidatesBody = {
@@ -41,9 +43,9 @@ Deno.serve(async (req) => {
     }
 
     const supabase = createAdminClient();
-    const providerName = marketProviderName();
+    const runtime = resolveProviderRuntime();
     const observedAt = new Date().toISOString();
-    const provider = await ensureProviderSource(supabase, providerName);
+    const provider = await ensureProviderSource(supabase, runtime.activeProviderName, runtime.providerType);
     const symbols = await loadSymbols(supabase, symbolCodes, limit);
     if (symbolCodes.length > 0 && symbols.length === 0) {
       throw notFound("No matching active symbols found", { symbol_codes: symbolCodes });
@@ -64,8 +66,9 @@ Deno.serve(async (req) => {
           auth_mode: auth.mode,
           user_id: auth.userId,
           requested_symbol_codes: symbolCodes,
-          provider_mode: provider.provider_type,
-          note: "sync-market-candidates writes sample/normalized market candidate cache only",
+          provider: providerMeta(runtime),
+          contract_version: "p2_market_data_provider_contract_v1",
+          note: "sync-market-candidates writes normalized market candidate cache only",
         },
       })
       .select("id")
@@ -78,34 +81,79 @@ Deno.serve(async (req) => {
 
     try {
       if (symbols.length > 0) {
-        const quoteRows = symbols.map((symbol) =>
-          sampleQuote(symbol, observedAt, provider.provider_name, provider.id)
-        );
-        const indicatorRows = symbols.map((symbol) =>
-          sampleIndicator(symbol, observedAt, provider.provider_name, provider.id)
-        );
+        const rows = await buildMarketCandidateRows(symbols, provider, runtime, observedAt, includeMarketContext);
 
         const { error: quoteError } = await supabase
           .from("market_price_snapshots")
-          .insert(quoteRows);
+          .insert(rows.priceSnapshots.map(toPriceSnapshotDbRow));
         if (quoteError) throw databaseError("Failed to insert market price snapshots", quoteError);
 
         const { error: indicatorError } = await supabase
           .from("technical_indicator_snapshots")
-          .insert(indicatorRows);
+          .insert(rows.technicalIndicators.map(toTechnicalIndicatorDbRow));
         if (indicatorError) {
           throw databaseError("Failed to insert technical indicator snapshots", indicatorError);
         }
 
-        rowsInserted += quoteRows.length + indicatorRows.length;
-      }
+        rowsInserted += rows.priceSnapshots.length + rows.technicalIndicators.length;
 
-      if (includeMarketContext) {
-        const { error: contextError } = await supabase
-          .from("market_context_snapshots")
-          .insert(sampleMarketContext(provider.provider_name, provider.id, observedAt));
-        if (contextError) throw databaseError("Failed to insert market context snapshot", contextError);
-        rowsInserted += 1;
+        if (rows.marketContext) {
+          const { error: contextError } = await supabase
+            .from("market_context_snapshots")
+            .insert(toMarketContextDbRow(rows.marketContext));
+          if (contextError) throw databaseError("Failed to insert market context snapshot", contextError);
+          rowsInserted += 1;
+        }
+
+        const finishedAt = new Date().toISOString();
+        const { error: updateError } = await supabase
+          .from("provider_sync_runs")
+          .update({
+            status: "success",
+            finished_at: finishedAt,
+            rows_inserted: rowsInserted,
+            rows_updated: 0,
+            rows_failed: rowsFailed,
+            metadata: {
+              auth_mode: auth.mode,
+              user_id: auth.userId,
+              requested_symbol_codes: symbolCodes,
+              provider: providerMeta(runtime),
+              provider_status: rows.providerStatus,
+              data_quality: rows.dataQuality,
+              used_production_adapter: rows.usedProductionAdapter,
+              contract_version: "p2_market_data_provider_contract_v1",
+            },
+          })
+          .eq("id", syncRun.id);
+
+        if (updateError) throw databaseError("Failed to finalize provider sync run", updateError);
+
+        return ok({
+          sync_run_id: syncRun.id,
+          provider: {
+            provider_name: provider.provider_name,
+            provider_type: provider.provider_type,
+            status: provider.status,
+            provider_mode: runtime.mode,
+          },
+          synced_symbols: symbols.map((symbol) => ({
+            symbol_id: symbol.id,
+            symbol_code: symbol.symbol_code,
+            company_name: symbol.company_name,
+          })),
+          synced_count: symbols.length,
+          rows_inserted: rowsInserted,
+          data_quality: rows.dataQuality,
+          provider_status: rows.providerStatus,
+          risk_warning: rows.riskWarning,
+        }, {
+          rule_version: "p2_market_data_provider_sync_v1",
+          data_quality: rows.dataQuality,
+          provider_name: provider.provider_name,
+          provider_status: rows.providerStatus,
+          provider_mode: runtime.mode,
+        });
       }
 
       const finishedAt = new Date().toISOString();
@@ -128,24 +176,20 @@ Deno.serve(async (req) => {
           provider_name: provider.provider_name,
           provider_type: provider.provider_type,
           status: provider.status,
+          provider_mode: runtime.mode,
         },
-        synced_symbols: symbols.map((symbol) => ({
-          symbol_id: symbol.id,
-          symbol_code: symbol.symbol_code,
-          company_name: symbol.company_name,
-        })),
+        synced_symbols: [],
         synced_count: symbols.length,
         rows_inserted: rowsInserted,
-        data_quality: "sample",
-        provider_status: provider.provider_type === "sample" ? "provider belum aktif" : "provider configured",
-        risk_warning: [{
-          level: "medium",
-          message: "Market candidate sync memakai sample data sampai provider production aktif.",
-        }],
+        data_quality: runtime.dataQuality,
+        provider_status: runtime.providerStatus,
+        risk_warning: runtime.riskWarning,
       }, {
-        rule_version: "p2_market_data_sample_sync_v1",
-        data_quality: "sample",
+        rule_version: "p2_market_data_provider_sync_v1",
+        data_quality: runtime.dataQuality,
         provider_name: provider.provider_name,
+        provider_status: runtime.providerStatus,
+        provider_mode: runtime.mode,
       });
     } catch (error) {
       rowsFailed = symbols.length;
