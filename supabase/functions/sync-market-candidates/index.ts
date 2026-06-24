@@ -14,6 +14,7 @@ import {
   providerMeta,
   resolveProviderRuntime,
   toMarketContextDbRow,
+  toOhlcvBarDbRow,
   toPriceSnapshotDbRow,
   toTechnicalIndicatorDbRow,
 } from "../_shared/marketData.ts";
@@ -99,6 +100,13 @@ Deno.serve(async (req) => {
           .insert(rows.priceSnapshots.map(toPriceSnapshotDbRow));
         if (quoteError) throw databaseError("Failed to insert market price snapshots", quoteError);
 
+        if (rows.ohlcvBars.length > 0) {
+          const { error: ohlcvError } = await supabase
+            .from("ohlcv_bars")
+            .insert(rows.ohlcvBars.map(toOhlcvBarDbRow));
+          if (ohlcvError) throw databaseError("Failed to insert OHLCV bars", ohlcvError);
+        }
+
         const { error: indicatorError } = await supabase
           .from("technical_indicator_snapshots")
           .insert(rows.technicalIndicators.map(toTechnicalIndicatorDbRow));
@@ -106,7 +114,7 @@ Deno.serve(async (req) => {
           throw databaseError("Failed to insert technical indicator snapshots", indicatorError);
         }
 
-        rowsInserted += rows.priceSnapshots.length + rows.technicalIndicators.length;
+        rowsInserted += rows.priceSnapshots.length + rows.ohlcvBars.length + rows.technicalIndicators.length;
 
         if (rows.marketContext) {
           const { error: contextError } = await supabase
@@ -157,6 +165,7 @@ Deno.serve(async (req) => {
           })),
           synced_count: symbols.length,
           rows_inserted: rowsInserted,
+          ohlcv_bars_inserted: rows.ohlcvBars.length,
           data_quality: rows.dataQuality,
           provider_status: rows.providerStatus,
           risk_warning: rows.riskWarning,
