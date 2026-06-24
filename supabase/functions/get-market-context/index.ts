@@ -8,6 +8,7 @@ import {
   buildMarketContextRow,
   DEFAULT_INDEX_SYMBOL,
   DEFAULT_MARKET_CODE,
+  DEFAULT_PROVIDER_NAME,
   ensureProviderSource,
   marketCacheTtlSeconds,
   providerMeta,
@@ -66,7 +67,10 @@ Deno.serve(async (req) => {
 
     if (!snapshot && createSampleIfMissing) {
       const provider = await ensureProviderSource(supabase, runtime.activeProviderName, runtime.providerType);
-      const builtContext = await buildMarketContextRow(provider, runtime, new Date().toISOString());
+      const fallbackProvider = runtime.mode === "live"
+        ? await ensureProviderSource(supabase, DEFAULT_PROVIDER_NAME, "sample")
+        : provider;
+      const builtContext = await buildMarketContextRow(provider, runtime, new Date().toISOString(), fallbackProvider);
       providerMode = builtContext.providerMode;
       providerStatusOverride = builtContext.providerStatus;
       const { data: inserted, error: insertError } = await supabase
@@ -99,6 +103,7 @@ Deno.serve(async (req) => {
         provider_name: snapshot?.provider_name ?? runtime.activeProviderName,
         provider_mode: effectiveProviderMode,
         provider_status: marketContext.provider_status,
+        data_quality: marketContext.data_quality,
       },
       cache: {
         allow_stale: allowStale,

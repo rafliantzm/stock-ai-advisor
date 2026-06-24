@@ -567,10 +567,18 @@ export async function buildMarketCandidateRows(
   runtime: ProviderRuntime,
   observedAt: string,
   includeMarketContext: boolean,
+  fallbackProvider: ProviderSource = provider,
 ): Promise<MarketCandidateRows> {
   if (runtime.isLiveConfigured) {
     try {
-      const liveRows = await fetchLiveCandidateRows(symbols, provider, runtime, observedAt, includeMarketContext);
+      const liveRows = await fetchLiveCandidateRows(
+        symbols,
+        provider,
+        fallbackProvider,
+        runtime,
+        observedAt,
+        includeMarketContext,
+      );
       if (liveRows.priceSnapshots.length > 0 || !includeMarketContext || liveRows.marketContext) {
         return liveRows;
       }
@@ -578,7 +586,7 @@ export async function buildMarketCandidateRows(
       console.warn("Market data provider fallback:", error);
       return buildFallbackCandidateRows(
         symbols,
-        provider,
+        fallbackProvider,
         runtime,
         observedAt,
         includeMarketContext,
@@ -639,6 +647,7 @@ export async function buildMarketContextRow(
   provider: ProviderSource,
   runtime: ProviderRuntime,
   observedAt: string,
+  fallbackProvider: ProviderSource = provider,
 ): Promise<MarketContextBuildResult> {
   if (runtime.isLiveConfigured) {
     try {
@@ -656,7 +665,7 @@ export async function buildMarketContextRow(
       };
     } catch (error) {
       console.warn("Market context provider fallback:", error);
-      const marketContext = sampleMarketContext(provider.provider_name, provider.id, observedAt, "stale");
+      const marketContext = sampleMarketContext(fallbackProvider.provider_name, fallbackProvider.id, observedAt, "stale");
       const providerStatus = "provider live error - fallback sample aktif";
       return {
         marketContext,
@@ -691,6 +700,7 @@ export async function buildMarketContextRow(
 async function fetchLiveCandidateRows(
   symbols: SymbolRow[],
   provider: ProviderSource,
+  fallbackProvider: ProviderSource,
   runtime: ProviderRuntime,
   observedAt: string,
   includeMarketContext: boolean,
@@ -717,8 +727,10 @@ async function fetchLiveCandidateRows(
         level: "medium",
         message: `${symbol.symbol_code} belum tersedia dari provider; memakai fallback stale.`,
       });
-      priceSnapshots.push(sampleQuote(symbol, observedAt, provider.provider_name, provider.id, "stale"));
-      technicalIndicators.push(sampleIndicator(symbol, observedAt, provider.provider_name, provider.id, "stale"));
+      priceSnapshots.push(sampleQuote(symbol, observedAt, fallbackProvider.provider_name, fallbackProvider.id, "stale"));
+      technicalIndicators.push(
+        sampleIndicator(symbol, observedAt, fallbackProvider.provider_name, fallbackProvider.id, "stale"),
+      );
       continue;
     }
 
@@ -728,8 +740,10 @@ async function fetchLiveCandidateRows(
         level: "medium",
         message: `${symbol.symbol_code} payload provider belum punya price/volume valid; memakai fallback stale.`,
       });
-      priceSnapshots.push(sampleQuote(symbol, observedAt, provider.provider_name, provider.id, "stale"));
-      technicalIndicators.push(sampleIndicator(symbol, observedAt, provider.provider_name, provider.id, "stale"));
+      priceSnapshots.push(sampleQuote(symbol, observedAt, fallbackProvider.provider_name, fallbackProvider.id, "stale"));
+      technicalIndicators.push(
+        sampleIndicator(symbol, observedAt, fallbackProvider.provider_name, fallbackProvider.id, "stale"),
+      );
       continue;
     }
 
@@ -738,8 +752,8 @@ async function fetchLiveCandidateRows(
   }
 
   const marketContext = includeMarketContext
-    ? await fetchProductionMarketContext(provider, observedAt).catch(() =>
-      sampleMarketContext(provider.provider_name, provider.id, observedAt, "stale")
+    ? await fetchLiveMarketContext(provider, observedAt).catch(() =>
+      sampleMarketContext(fallbackProvider.provider_name, fallbackProvider.id, observedAt, "stale")
     )
     : null;
 
@@ -797,7 +811,7 @@ function normalizeProviderQuote(
     raw_payload: {
       source: "normalized_provider",
       contract_version: CONTRACT_VERSION,
-      captured_fields: Object.keys(item).filter((key) => !key.toLowerCase().includes("key")),
+      note: "provider payload normalized; raw response is not exposed",
     },
   };
 }
