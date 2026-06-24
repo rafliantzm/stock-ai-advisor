@@ -279,27 +279,31 @@ Status: PASS
 Actual Result:
 - sync-market-candidates returned ok true.
 - get-market-context returned ok true.
+- sync-market-candidates provider_mode: provider_error.
+- sync-market-candidates data_quality: stale.
+- get-market-context provider_mode: provider_error.
+- get-market-context data_quality: stale.
+- get-market-context provider.data_quality: stale.
+- get-market-context provider_name: sample_provider, because fallback sample/cache is active.
+- get-market-context requested_provider_name remains the configured live provider name.
 - provider_sources: 1 row.
 - provider_sync_runs: 3 rows.
 - market_price_snapshots: 15 rows.
 - technical_indicator_snapshots: 15 rows.
 - market_context_snapshots: 3 rows.
 - news_items: 0 rows, expected because news provider is not active yet.
-- sync-market-candidates provider_mode: sample.
-- sync-market-candidates data_quality: sample.
-- get-market-context provider_mode: sample.
-- get-market-context data_quality: stale.
 - get-market-context is_stale: true.
-- Provider production/live mode is not active yet.
+- Live provider path is configured but currently falls back safely with provider_error.
+- Fallback sample/cache is active and clearly exposed through provider_status, risk_warning, and data_quality.
 - Provider secrets remain handled through Supabase Edge Function environment.
 - Flutter client does not expose service role key or provider secret.
 
 Conclusion:
-P2 live provider foundation is working correctly with sample-provider fallback. The Edge Functions deploy successfully, API calls return ok true, database write flow is verified, and stale/sample state is clearly exposed for educational/non-real-time usage.
+P2 live provider foundation is working correctly with sample-provider fallback. The Edge Functions deploy successfully, API calls return ok true, database write flow is verified, and provider_error/stale state is clearly exposed for educational watchlist context only.
 
 ```
 
-Status: Pass / Fail
+Status: Pass
 
 ## Final Result
 

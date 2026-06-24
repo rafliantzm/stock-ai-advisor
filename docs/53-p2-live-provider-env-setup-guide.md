@@ -14,6 +14,14 @@ Supabase Dashboard:
    - `sync-market-candidates`
    - `get-market-context`
 
+Supabase CLI check:
+
+```bash
+supabase secrets list
+```
+
+The command should show secret names only. It must not be copied into Flutter config.
+
 ## Minimal Sample Mode
 
 Gunakan mode ini untuk fallback baseline.
@@ -39,6 +47,8 @@ MARKET_DATA_PROVIDER_NAME=provider_name
 MARKET_DATA_API_BASE_URL=https://provider.example
 MARKET_DATA_API_KEY=secret_value
 ```
+
+Set these as Supabase Edge Function secrets only. Keep `MARKET_DATA_API_KEY` out of Flutter, mobile build config, public docs, and committed files.
 
 Optional:
 
@@ -154,6 +164,86 @@ Market context response can be:
 - Do not store provider auth headers, cookies, tokens, or credentials in `raw_payload`.
 - Do not send raw provider payload to Flutter.
 - Use Supabase Edge Functions as the only path to provider access.
+
+## Deploy Commands
+
+Run from project root after updating Edge Function secrets:
+
+```bash
+supabase functions deploy sync-market-candidates
+supabase functions deploy get-market-context
+```
+
+If the project is not linked locally, pass the project ref:
+
+```bash
+supabase functions deploy sync-market-candidates --project-ref PROJECT_REF
+supabase functions deploy get-market-context --project-ref PROJECT_REF
+```
+
+## PowerShell Smoke Tests
+
+Prepare variables:
+
+```powershell
+$env:SUPABASE_URL = "https://PROJECT_REF.supabase.co"
+$env:USER_JWT = "USER_ACCESS_TOKEN"
+```
+
+Test `sync-market-candidates`:
+
+```powershell
+$headers = @{
+  Authorization = "Bearer $env:USER_JWT"
+  "Content-Type" = "application/json"
+}
+
+$body = @{
+  symbol_codes = @("BBCA", "TLKM")
+  limit = 10
+  include_market_context = $true
+  run_mode = "manual"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "$env:SUPABASE_URL/functions/v1/sync-market-candidates" `
+  -Headers $headers `
+  -Body $body
+```
+
+Expected safe response:
+
+- `ok = true`
+- `data.data_quality` is `sample`, `stale`, or `production`
+- `meta.provider_mode` is `sample`, `live`, `fallback_sample`, or `provider_error`
+- `risk_warning` appears when data is sample/stale
+- no provider secret is returned
+
+Test `get-market-context`:
+
+```powershell
+$body = @{
+  market_code = "IDX"
+  index_symbol = "IHSG"
+  allow_stale = $true
+  create_sample_if_missing = $true
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "$env:SUPABASE_URL/functions/v1/get-market-context" `
+  -Headers $headers `
+  -Body $body
+```
+
+Expected safe response:
+
+- `ok = true`
+- `data.market_context.market_code = IDX`
+- `data.market_context.risk_warning` appears when data is sample/stale
+- disclaimer says the context is educational and not a transaction instruction
+- no provider secret is returned
 
 ## Operational Notes
 
