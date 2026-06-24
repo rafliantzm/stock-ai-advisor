@@ -1,6 +1,6 @@
 # 44. P2 Market Data Edge Functions Plan
 
-Dokumen ini merancang Edge Functions P2 sebelum implementasi. Belum ada kode Edge Function pada tahap ini.
+Dokumen ini merancang Edge Functions P2. Implementasi awal sudah dimulai untuk `sync-market-candidates` dan `get-market-context`.
 
 ## Tujuan
 
@@ -124,6 +124,7 @@ Purpose:
 
 - Flutter membaca Market Context/IHSG.
 - Mengganti placeholder P1 secara bertahap.
+- Implementasi awal tersedia di `supabase/functions/get-market-context/index.ts`.
 
 Request:
 
@@ -390,6 +391,38 @@ Test awal:
 - watchlist user lain ditolak;
 - API key tidak muncul di response/error;
 - `evaluate-watchlist-v2` tidak merusak hasil P0.
+
+## Initial Function: sync-market-candidates
+
+Purpose:
+
+- Mengisi cache P2 awal untuk symbol kandidat.
+- Menulis sample/normalized quote ke `market_price_snapshots`.
+- Menulis sample technical indicator snapshot ke `technical_indicator_snapshots`.
+- Opsional menulis sample market context ke `market_context_snapshots`.
+- Mencatat audit ke `provider_sync_runs`.
+
+Request:
+
+```json
+{
+  "symbol_codes": ["BBCA", "ASII"],
+  "limit": 10,
+  "include_market_context": true,
+  "run_mode": "manual"
+}
+```
+
+Security:
+
+- Jika `MARKET_DATA_SYNC_TOKEN` tersedia, caller harus mengirim header `x-sync-token`.
+- Jika `MARKET_DATA_SYNC_TOKEN` belum diset, function fallback ke Supabase Auth JWT.
+- Provider secret tetap hanya di Edge Function environment.
+
+Status:
+
+- Implementasi awal tersedia di `supabase/functions/sync-market-candidates/index.ts`.
+- Mode awal memakai `sample data` dan label `provider belum aktif`.
 
 ## Disclaimer
 
