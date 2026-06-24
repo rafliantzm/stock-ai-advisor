@@ -81,6 +81,7 @@ Expected valid live result:
 - `ok = true`
 - `data.data_quality = live` or `delayed`
 - `meta.provider_mode = live`
+- `data.ohlcv_bars_inserted` is greater than 0 only when provider returns complete OHLC fields
 - `risk_warning` is empty or low-noise
 - rows are written to `market_price_snapshots`
 
@@ -214,6 +215,7 @@ limit 10;
 Expected:
 
 - Data rows appear after successful sync.
+- `ohlcv_bars` may remain empty when provider does not include complete OHLC fields.
 - `raw_payload` and metadata contain no provider credential.
 - Stale/sample fallback is clearly marked when live provider is not usable.
 

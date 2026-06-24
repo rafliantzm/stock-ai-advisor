@@ -74,15 +74,17 @@ export type NormalizedOhlcvBar = {
   symbol_code: string;
   provider_source_id: string;
   provider_name: string;
+  provider_symbol: string;
   timeframe: string;
   observed_at: string;
-  open_price: number | null;
-  high_price: number | null;
-  low_price: number | null;
-  close_price: number | null;
+  open_price: number;
+  high_price: number;
+  low_price: number;
+  close_price: number;
   volume: number | null;
   value_traded: number | null;
   data_quality: MarketDataQuality;
+  raw_payload: Record<string, unknown>;
 };
 
 export type NormalizedTechnicalIndicator = {
@@ -144,6 +146,7 @@ export type NormalizedProviderSyncRun = {
 
 export type MarketCandidateRows = {
   priceSnapshots: NormalizedPriceSnapshot[];
+  ohlcvBars: NormalizedOhlcvBar[];
   technicalIndicators: NormalizedTechnicalIndicator[];
   marketContext: NormalizedMarketContext | null;
   dataQuality: MarketDataQuality;
@@ -677,6 +680,7 @@ function buildFallbackCandidateRows(
     priceSnapshots: symbols.map((symbol) =>
       sampleQuote(symbol, observedAt, provider.provider_name, provider.id, fallbackQuality)
     ),
+    ohlcvBars: [],
     technicalIndicators: symbols.map((symbol) =>
       sampleIndicator(symbol, observedAt, provider.provider_name, provider.id, fallbackQuality)
     ),
@@ -766,6 +770,7 @@ async function fetchLiveCandidateRows(
   }
 
   const priceSnapshots: NormalizedPriceSnapshot[] = [];
+  const ohlcvBars: NormalizedOhlcvBar[] = [];
   const technicalIndicators: NormalizedTechnicalIndicator[] = [];
   const fallbackWarnings: RiskWarning[] = [];
   for (const symbol of symbols) {
@@ -796,6 +801,8 @@ async function fetchLiveCandidateRows(
     }
 
     priceSnapshots.push(normalizedQuote);
+    const ohlcvBar = ohlcvBarFromQuote(symbol, normalizedQuote, provider);
+    if (ohlcvBar) ohlcvBars.push(ohlcvBar);
     technicalIndicators.push(providerIndicatorFromQuote(symbol, normalizedQuote, provider));
   }
 
@@ -809,12 +816,14 @@ async function fetchLiveCandidateRows(
     Boolean(marketContext && !isProviderFreshQuality(marketContext.data_quality));
   const dataQuality = hasFallback ? "stale" : mergeProviderQualities([
     ...priceSnapshots.map((row) => row.data_quality),
+    ...ohlcvBars.map((row) => row.data_quality),
     ...technicalIndicators.map((row) => row.data_quality),
     ...(marketContext ? [marketContext.data_quality] : []),
   ]);
 
   return {
     priceSnapshots,
+    ohlcvBars,
     technicalIndicators,
     marketContext,
     dataQuality,
@@ -920,6 +929,44 @@ function providerIndicatorFromQuote(
 
 function hasUsablePriceSnapshot(row: NormalizedPriceSnapshot): boolean {
   return row.last_price !== null || row.previous_close !== null || row.volume !== null;
+}
+
+function ohlcvBarFromQuote(
+  symbol: SymbolRow,
+  quote: NormalizedPriceSnapshot,
+  provider: ProviderSource,
+): NormalizedOhlcvBar | null {
+  const closePrice = quote.last_price;
+  if (
+    quote.open_price === null ||
+    quote.high_price === null ||
+    quote.low_price === null ||
+    closePrice === null
+  ) {
+    return null;
+  }
+
+  return {
+    symbol_id: symbol.id,
+    symbol_code: symbol.symbol_code,
+    provider_source_id: provider.id,
+    provider_name: provider.provider_name,
+    provider_symbol: quote.provider_symbol,
+    timeframe: "1d",
+    observed_at: quote.observed_at,
+    open_price: quote.open_price,
+    high_price: quote.high_price,
+    low_price: quote.low_price,
+    close_price: closePrice,
+    volume: quote.volume,
+    value_traded: quote.value_traded,
+    data_quality: quote.data_quality,
+    raw_payload: {
+      source: "normalized_provider_quote",
+      contract_version: CONTRACT_VERSION,
+      note: "OHLCV derived from normalized provider quote; raw provider response is not stored.",
+    },
+  };
 }
 
 async function fetchLiveMarketContext(
@@ -1078,6 +1125,13 @@ export function sanitizeMarketContext(
 }
 
 export function toPriceSnapshotDbRow(row: NormalizedPriceSnapshot) {
+  return {
+    ...row,
+    data_quality: row.data_quality === "live" || row.data_quality === "production" ? "realtime" : row.data_quality,
+  };
+}
+
+export function toOhlcvBarDbRow(row: NormalizedOhlcvBar) {
   return {
     ...row,
     data_quality: row.data_quality === "live" || row.data_quality === "production" ? "realtime" : row.data_quality,

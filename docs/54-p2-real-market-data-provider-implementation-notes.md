@@ -15,6 +15,7 @@ Dokumen ini mencatat implementasi adapter real market data provider untuk P2. Sc
 - Provider failure, timeout, invalid JSON, incomplete quote, stale source time, dan rate limit HTTP akan jatuh ke fallback aman.
 - Raw provider response tidak dikirim ke Flutter.
 - Provider credential tidak disimpan di Flutter, docs publik, atau response.
+- `ohlcv_bars` ditulis hanya ketika provider quote memiliki `open`, `high`, `low`, dan `close`/`last_price` yang valid.
 
 ## Normalized Quote Fields
 
@@ -66,6 +67,18 @@ When quote fields are sufficient, the backend writes a minimal technical snapsho
 - `invalidation_level` as an educational risk context derived from last price.
 
 This is not a full OHLCV indicator engine. OHLCV-based indicators remain a follow-up.
+
+## OHLCV Bars
+
+`sync-market-candidates` writes daily `ohlcv_bars` when a provider response contains complete candle fields:
+
+- open price;
+- high price;
+- low price;
+- close or last price;
+- source time.
+
+If the provider only returns last price and volume, `market_price_snapshots` and minimal `technical_indicator_snapshots` can still be written, while `ohlcv_bars` remains empty. This is expected and should not be treated as a failed sync.
 
 ## Market Context
 

@@ -228,6 +228,7 @@ Expected safe response:
 - `ok = true`
 - `data.data_quality` is `sample`, `stale`, `live`, or `delayed`
 - `meta.provider_mode` is `sample`, `live`, `fallback_sample`, or `provider_error`
+- `data.ohlcv_bars_inserted` can remain `0` when provider does not return complete open/high/low/close fields
 - `risk_warning` appears when data is sample/stale
 - no provider secret is returned
 
