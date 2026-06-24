@@ -97,14 +97,29 @@ Actual:
 Status: PASS
 
 Actual Result:
-- sync-market-candidates returned ok true
-- get-market-context returned ok true
-- provider_mode: ...
-- data_quality: ...
-- provider_status: ...
-- fallback status: active / not active
-- provider secrets remain handled in Supabase Edge Functions
-- Flutter does not expose service role key or provider secret
+Status: PASS
+
+Actual Result:
+- sync-market-candidates returned ok true.
+- get-market-context returned ok true.
+- sync-market-candidates provider_mode: provider_error.
+- sync-market-candidates data_quality: stale.
+- sync-market-candidates provider_status: provider live error - fallback sample aktif.
+- get-market-context provider_mode: provider_error.
+- get-market-context data_quality: stale.
+- get-market-context provider_status: provider live belum mengembalikan data valid - fallback cache aktif.
+- fallback status: active.
+- provider_sync_runs: 7 rows.
+- market_price_snapshots: 35 rows.
+- ohlcv_bars: 0 rows.
+- technical_indicator_snapshots: 35 rows.
+- market_context_snapshots: 7 rows.
+- news_items: 0 rows.
+- Provider secrets remain handled in Supabase Edge Functions.
+- Flutter does not expose service role key or provider secret.
+
+Conclusion:
+The real market data provider adapter is structurally working, but live production data is not active yet. The system safely falls back to stale/sample data with clear provider_error metadata and risk warnings.
 
 ```
 
