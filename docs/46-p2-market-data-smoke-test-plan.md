@@ -316,3 +316,23 @@ Actual Result:
 
 Conclusion:
 P2 market data sample sync is working correctly. The provider is still sample-based, but the schema, Edge Functions, database writes, and market context response are valid for P2 foundation.
+
+## P2 Production Provider Smoke Test Result
+
+Status: PASS
+
+Actual Result:
+- sync-market-candidates returned ok true.
+- get-market-context returned ok true.
+- provider_sources has at least 1 row.
+- provider_sync_runs has at least 1 successful sync row.
+- market_price_snapshots has sample rows inserted.
+- technical_indicator_snapshots has sample rows inserted.
+- market_context_snapshots has at least 1 row.
+- news_items remains 0 rows because news provider is not active yet.
+- sync-market-candidates data_quality: sample.
+- get-market-context data_quality: stale.
+- get-market-context is_stale: true.
+- provider_mode: sample.
+- provider production is not active yet.
+- Result is valid for educational/sample-provider validation, not real-time production market analysis.
