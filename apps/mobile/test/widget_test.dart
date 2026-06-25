@@ -5,6 +5,8 @@ import 'package:mobile/app/stock_ai_app.dart';
 import 'package:mobile/design_system/ui_components.dart';
 import 'package:mobile/core/models/market_data_models.dart';
 import 'package:mobile/features/alerts/alert_screen.dart';
+import 'package:mobile/features/chart_lab/chart_lab_screen.dart';
+import 'package:mobile/features/stock_detail/stock_detail_screen.dart';
 
 void main() {
   testWidgets('shows missing Supabase config state', (tester) async {
@@ -80,6 +82,56 @@ void main() {
     expect(response.marketContext.riskWarnings.first.level, 'medium');
     expect(response.provider.providerName, 'sample_provider');
     expect(response.cache.ttlSeconds, 900);
+  });
+
+  test('market context adapter reads delayed live provider-backed state', () {
+    final response = MarketContextResponse.fromResult(
+      {
+        'market_context': {
+          'market_code': 'IDX',
+          'index_symbol': 'IHSG',
+          'market_status': 'Provider-backed watchlist context',
+          'index_trend': 'Provider-backed watchlist context',
+          'risk_regime': 'Risk-aware delayed context',
+          'data_quality': 'delayed',
+          'is_stale': false,
+          'risk_warning': [
+            {
+              'level': 'low',
+              'message':
+                  'Data provider bersifat delayed; gunakan sebagai konteks edukatif watchlist candidate.',
+            },
+          ],
+        },
+        'provider': {
+          'provider_name': 'mixed_live_providers',
+          'provider_status':
+              'Provider live aktif dengan kontribusi multi-provider',
+          'provider_mode': 'live',
+          'data_quality': 'delayed',
+        },
+        'cache': {
+          'allow_stale': true,
+          'stale_blocked': false,
+          'ttl_seconds': 900,
+        },
+        'disclaimer': 'Edukasi watchlist context.',
+      },
+      {
+        'data_quality': 'delayed',
+        'provider_name': 'mixed_live_providers',
+        'provider_status':
+            'Provider live aktif dengan kontribusi multi-provider',
+        'provider_mode': 'live',
+      },
+    );
+
+    expect(response.marketContext.isDelayed, isTrue);
+    expect(response.marketContext.isLiveBacked, isTrue);
+    expect(response.marketContext.isSample, isFalse);
+    expect(response.marketContext.isStale, isFalse);
+    expect(response.meta.isDelayedLive, isTrue);
+    expect(response.provider.providerName, 'mixed_live_providers');
   });
 
   test('sync adapter reads live delayed multi-provider diagnostics', () {
@@ -192,6 +244,66 @@ void main() {
           .first
           .selectedProviderSymbol,
       'BBRI.JK',
+    );
+  });
+
+  testWidgets('chart lab copy reflects provider-backed preview', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(home: Scaffold(body: ChartLabScreen())),
+    );
+
+    expect(
+      find.textContaining('Provider P2 sudah aktif sebagai delayed context'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('Provider-backed OHLCV cache sedang disiapkan'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('stock detail copy uses delayed provider context', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 1800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: StockDetailScreen(
+          item: {
+            'symbol_code': 'BBRI',
+            'symbols': {'company_name': 'Bank Rakyat Indonesia'},
+            'latest_score': {
+              'overall_score': 72,
+              'technical_score': 70,
+              'harmony_score': 66,
+              'fundamental_score': 74,
+              'risk_score': 61,
+              'liquidity_score': 80,
+              'candidate_label': 'watchlist candidate',
+              'rule_version': 'p0_dummy_scoring_v1',
+            },
+          },
+        ),
+      ),
+    );
+
+    expect(
+      find.textContaining(
+        'Market data P2 tersedia sebagai delayed provider context.',
+      ),
+      findsOneWidget,
+    );
+
+    await tester.drag(find.byType(ListView), const Offset(0, -1200));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.textContaining('Rule scoring awal menjadi sumber utama'),
+      findsWidgets,
     );
   });
 }

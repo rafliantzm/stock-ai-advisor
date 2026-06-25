@@ -20,7 +20,7 @@ class StockAnalysisRepository {
         modeScore: _average([technical, liquidity, risk]),
         label: 'wait confirmation',
         reason:
-            'Membutuhkan konfirmasi intraday dan volume. Data P1 masih berbasis latest_score, bukan market real-time.',
+            'Membutuhkan konfirmasi intraday dan volume. Data P1 memakai latest score; market data P2 tersedia sebagai delayed context untuk validasi lanjutan.',
         invalidationLevel: analysis.invalidationLevel,
         riskWarning: _riskLabel(risk),
       ),
@@ -36,7 +36,7 @@ class StockAnalysisRepository {
       ModeScore(
         mode: 'Hold Dividend',
         modeScore: _average([fundamental, risk, liquidity]),
-        label: 'needs_more_data',
+        label: 'Data belum cukup',
         reason:
             'Mode dividen membutuhkan data dividend yield dan corporate action yang belum aktif di P1.',
         invalidationLevel: analysis.invalidationLevel,
@@ -47,7 +47,7 @@ class StockAnalysisRepository {
         modeScore: _average([fundamental, technical, harmony]),
         label: 'risk controlled candidate',
         reason:
-            'Mode ini hanya menandai kandidat riset lanjutan. Validasi growth dan valuation belum real-time.',
+            'Mode ini hanya menandai kandidat riset lanjutan. Validasi growth dan valuation belum lengkap di P1.',
         invalidationLevel: analysis.invalidationLevel,
         riskWarning: 'Risiko volatilitas tinggi, gunakan invalidation level.',
       ),
@@ -56,7 +56,7 @@ class StockAnalysisRepository {
 
   String buildMainInsight(StockAnalysis analysis) {
     if (!analysis.hasScore) {
-      return 'latest_score belum tersedia. Jalankan evaluate-watchlist untuk menampilkan score dummy P0.';
+      return 'latest score belum tersedia. Jalankan evaluate-watchlist untuk menampilkan Rule scoring awal.';
     }
     return '${analysis.symbolCode} masuk kategori ${analysis.candidateLabel.replaceAll('_', ' ')}. Gunakan score sebagai bahan observasi, bukan instruksi transaksi.';
   }
