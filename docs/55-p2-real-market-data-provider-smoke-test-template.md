@@ -50,6 +50,13 @@ Optional Alpha Vantage settings:
 - `MARKET_DATA_ALPHA_VANTAGE_FETCH_DAILY=true` to request latest daily OHLCV bars.
 - `MARKET_DATA_ALPHA_VANTAGE_STALE_DAYS=7` to control delayed daily data staleness.
 
+Optional provider fallback settings:
+
+- `MARKET_DATA_FALLBACK_PROVIDER` or `MARKET_DATA_FALLBACK_PROVIDER_NAME`
+- `MARKET_DATA_FALLBACK_PROVIDER_BASE_URL` or `MARKET_DATA_FALLBACK_API_BASE_URL`
+- `MARKET_DATA_FALLBACK_PROVIDER_API_KEY` or `MARKET_DATA_FALLBACK_API_KEY`
+- Current fallback provider support is diagnostic-first. If no fallback adapter is enabled, the system safely continues to stale/sample fallback.
+
 Actual:
 
 ```text
@@ -120,6 +127,10 @@ Expected fallback result:
   - `json_top_level_keys`
   - `provider_response_keys`
   - `symbol_diagnostics`
+  - `provider_attempts`
+  - `selected_provider`
+  - `fallback_provider_used`
+  - `provider_failover_reason`
   - `fallback_reason`
 - diagnostics must not include API key, Authorization header, JWT, service role key, full URL, or raw provider response
 
@@ -135,6 +146,14 @@ Symbol candidate order:
 1. Original internal symbol, for example `BBCA`.
 2. IDX suffix variant, for example `BBCA.JK`.
 3. Configured override value from `MARKET_DATA_ALPHA_VANTAGE_SYMBOL_MAP` when available.
+
+Provider priority strategy:
+
+1. Primary provider: `alpha_vantage`.
+2. Configured fallback provider placeholder, when fallback provider env exists.
+3. Stale/sample fallback.
+
+Safe provider attempt metadata may include provider name, provider role, configured status, selected/skipped/fallback status, data quality, and failover reason. It must not include provider URL path, query string, secret, API key, JWT, or raw provider response.
 
 Alpha Vantage fallback examples:
 
@@ -174,6 +193,7 @@ Rate-limit/provider-message handling:
 - Top-level `Error Message` is treated as `alpha_vantage_invalid_symbol`.
 - If all configured variants fail for a symbol, mark it as `alpha_vantage_invalid_symbol` or quote-missing provider limitation, not a database failure.
 - Diagnostics include only safe metadata such as `provider_response_keys`, HTTP status, content type, host, and fallback reason.
+- Provider failover diagnostics include `provider_attempts`, `selected_provider`, `fallback_provider_used`, and `provider_failover_reason`.
 - Raw provider response and credentials must not be pasted into this report.
 
 ## Test 2 - Get Market Context
