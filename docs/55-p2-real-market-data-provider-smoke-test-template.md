@@ -43,6 +43,7 @@ MARKET_DATA_PROVIDER_API_KEY=<set only in Supabase Edge Function secrets>
 Optional Alpha Vantage settings:
 
 - `MARKET_DATA_ALPHA_VANTAGE_SYMBOL_SUFFIX=.JK` for IDX suffix retry.
+- `MARKET_DATA_ALPHA_VANTAGE_SYMBOL_MAP={"BBCA":"BBCA.JK"}` for explicit provider symbol overrides.
 - `MARKET_DATA_ALPHA_VANTAGE_INDEX_SYMBOL=IHSG` or a provider-supported index symbol.
 - `MARKET_DATA_ALPHA_VANTAGE_FETCH_DAILY=true` to request latest daily OHLCV bars.
 - `MARKET_DATA_ALPHA_VANTAGE_STALE_DAYS=7` to control delayed daily data staleness.
@@ -121,35 +122,42 @@ Expected fallback result:
 
 Alpha Vantage fallback examples:
 
-- `fallback_reason = alpha_vantage_rate_limit` when provider returns a rate-limit note.
-- `fallback_reason = alpha_vantage_unsupported_symbol` when both plain and suffix symbol variants are unsupported.
+- `fallback_reason = alpha_vantage_information_response` when provider returns a top-level `Information` response.
+- `fallback_reason = alpha_vantage_rate_limited` when provider returns a top-level `Note` response.
+- `fallback_reason = alpha_vantage_invalid_symbol` when provider returns a top-level `Error Message` response after symbol variants are attempted.
 - `fallback_reason = alpha_vantage_quote_missing` when `Global Quote` is empty.
 - `fallback_reason = provider_invalid_json` when the response is not valid JSON.
+- When `Information` or `Note` appears for one symbol, the sync should stop extra Alpha Vantage calls for the remaining symbols in that run and use stale/sample fallback safely.
 
 Actual:
 
-Status: PARTIAL PASS
+Status: PASS - provider information response handled safely
 
-Actual Result:
+Actual result:
 - sync-market-candidates returned ok true.
 - provider_name: alpha_vantage.
 - provider_host: www.alphavantage.co.
 - provider_http_status: 200.
-- provider_content_type: application/json.
-- provider_response_keys: Global Quote.
-- provider_mode: provider_error.
-- data_quality: stale.
-- fallback_reason: alpha_vantage_payload_missing_or_incomplete_symbols.
-- rows_inserted: 13.
-- ohlcv_bars_inserted: 2.
-- Alpha Vantage credential is valid and reachable.
-- Some symbols still fall back to stale/sample data because live provider payload is incomplete.
-- get-market-context still returns stale fallback for IHSG.
-- Provider secrets remain handled in Supabase Edge Functions.
-- Flutter does not expose service role key or provider secret.
+- provider_response_keys: Information.
+- fallback_reason: alpha_vantage_information_response.
+- live_symbol_count: 1.
+- live_symbols: ASII.
+- fallback_symbol_count: 4.
+- fallback_symbols: BBCA, BBRI, TLKM, UNVR.
+- data_quality remains stale because fallback symbols still exist.
+- No duplicate key error occurred.
+- No provider API key, JWT token, service role key, or raw provider response is exposed.
 
 Conclusion:
 Alpha Vantage credential activation is partially successful. The provider is reachable and returns valid JSON, but not all IDX symbols are mapped into complete live data yet. The system safely falls back to stale/sample data for incomplete symbols.
+
+Rate-limit/provider-message handling:
+
+- Top-level `Information` is treated as `alpha_vantage_information_response`.
+- Top-level `Note` is treated as `alpha_vantage_rate_limited`.
+- Top-level `Error Message` is treated as `alpha_vantage_invalid_symbol`.
+- Diagnostics include only safe metadata such as `provider_response_keys`, HTTP status, content type, host, and fallback reason.
+- Raw provider response and credentials must not be pasted into this report.
 
 ## Test 2 - Get Market Context
 
