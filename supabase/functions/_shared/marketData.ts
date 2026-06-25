@@ -225,6 +225,11 @@ type AlphaVantageQuoteResult = {
   diagnostics: ProviderDiagnostics;
 };
 
+type AlphaVantageStopState = {
+  diagnostics: ProviderDiagnostics;
+  reason: string;
+};
+
 export const DEFAULT_PROVIDER_NAME = "sample_provider";
 export const DEFAULT_MARKET_CODE = "IDX";
 export const DEFAULT_INDEX_SYMBOL = "IHSG";
@@ -1131,8 +1136,21 @@ async function fetchAlphaVantageCandidateRows(
   const liveSymbols: string[] = [];
   const fallbackSymbols: string[] = [];
   let latestDiagnostics: ProviderDiagnostics | undefined;
+  let providerStopState: AlphaVantageStopState | null = null;
 
   for (const symbol of symbols) {
+    if (providerStopState) {
+      latestDiagnostics = providerStopState.diagnostics;
+      fallbackSymbols.push(symbol.symbol_code);
+      fallbackWarnings.push({
+        level: "medium",
+        message: `${symbol.symbol_code} memakai fallback stale karena Alpha Vantage membatasi atau mengirim pesan provider.`,
+      });
+      priceSnapshots.push(sampleQuote(symbol, observedAt, fallbackProvider.provider_name, fallbackProvider.id, "stale"));
+      technicalIndicators.push(sampleIndicator(symbol, observedAt, fallbackProvider.provider_name, fallbackProvider.id, "stale"));
+      continue;
+    }
+
     try {
       const quoteResult = await fetchAlphaVantageQuote(symbol);
       latestDiagnostics = quoteResult.diagnostics;
@@ -1151,7 +1169,15 @@ async function fetchAlphaVantageCandidateRows(
       let ohlcvBar: NormalizedOhlcvBar | null = null;
       try {
         ohlcvBar = await fetchAlphaVantageDailyBar(symbol, normalizedQuote.provider_symbol, provider);
-      } catch {
+      } catch (error) {
+        const dailyDiagnostics = diagnosticsFromError(error, runtime, symbols.length, "alpha_vantage_daily_fetch_failed");
+        latestDiagnostics = dailyDiagnostics;
+        if (shouldStopAlphaVantageRun(dailyDiagnostics.fallback_reason)) {
+          providerStopState = {
+            diagnostics: dailyDiagnostics,
+            reason: dailyDiagnostics.fallback_reason,
+          };
+        }
         ohlcvBar = ohlcvBarFromQuote(symbol, normalizedQuote, provider);
       }
       if (ohlcvBar) ohlcvBars.push(ohlcvBar);
@@ -1159,6 +1185,12 @@ async function fetchAlphaVantageCandidateRows(
       technicalIndicators.push(providerIndicatorFromQuote(symbol, normalizedQuote, provider));
     } catch (error) {
       latestDiagnostics = diagnosticsFromError(error, runtime, symbols.length, "alpha_vantage_fetch_failed");
+      if (shouldStopAlphaVantageRun(latestDiagnostics.fallback_reason)) {
+        providerStopState = {
+          diagnostics: latestDiagnostics,
+          reason: latestDiagnostics.fallback_reason,
+        };
+      }
       fallbackSymbols.push(symbol.symbol_code);
       fallbackWarnings.push({
         level: "medium",
@@ -1173,8 +1205,19 @@ async function fetchAlphaVantageCandidateRows(
   let marketContextFallback = false;
   if (includeMarketContext) {
     try {
+      if (providerStopState) {
+        throw new ProviderFetchError("Alpha Vantage provider message already received in this sync run", providerStopState.diagnostics);
+      }
       marketContext = await fetchAlphaVantageMarketContext(provider, observedAt);
-    } catch {
+    } catch (error) {
+      const contextDiagnostics = diagnosticsFromError(error, runtime, symbols.length, "alpha_vantage_market_context_fetch_failed");
+      latestDiagnostics = contextDiagnostics;
+      if (shouldStopAlphaVantageRun(contextDiagnostics.fallback_reason)) {
+        providerStopState = {
+          diagnostics: contextDiagnostics,
+          reason: contextDiagnostics.fallback_reason,
+        };
+      }
       marketContextFallback = true;
       marketContext = sampleMarketContext(fallbackProvider.provider_name, fallbackProvider.id, observedAt, "stale");
     }
@@ -1206,11 +1249,12 @@ async function fetchAlphaVantageCandidateRows(
     diagnostics: hasFallback && latestDiagnostics
       ? {
         ...latestDiagnostics,
-        fallback_reason: fallbackWarnings.length > 0
-          ? "alpha_vantage_payload_missing_or_incomplete_symbols"
-          : marketContextFallback
-          ? "market_context_fallback"
-          : "alpha_vantage_payload_stale_or_partial",
+        fallback_reason: alphaVantageAggregateFallbackReason(
+          latestDiagnostics.fallback_reason,
+          providerStopState?.reason,
+          fallbackWarnings.length > 0,
+          marketContextFallback,
+        ),
       }
       : undefined,
   };
@@ -1237,7 +1281,7 @@ async function fetchAlphaVantageQuote(symbol: SymbolRow): Promise<AlphaVantageQu
         ...result.diagnostics,
         fallback_reason: alphaVantageFallbackReason(result.payload),
       };
-      const canRetryWithSuffix = latestDiagnostics.fallback_reason === "alpha_vantage_unsupported_symbol" && index < candidates.length - 1;
+      const canRetryWithSuffix = latestDiagnostics.fallback_reason === "alpha_vantage_invalid_symbol" && index < candidates.length - 1;
       if (canRetryWithSuffix) continue;
       throw new ProviderFetchError("Alpha Vantage quote response is invalid or unsupported", latestDiagnostics);
     }
@@ -1536,7 +1580,37 @@ function alphaVantageSymbolCandidates(symbolCode: string): string[] {
   if (suffix && !normalized.endsWith(suffix.toUpperCase()) && /^[A-Z0-9]{2,8}$/.test(normalized)) {
     candidates.push(`${normalized}${suffix.toUpperCase()}`);
   }
+  const mappedSymbol = alphaVantageMappedSymbol(normalized);
+  if (mappedSymbol) candidates.push(mappedSymbol);
   return [...new Set(candidates)];
+}
+
+function alphaVantageMappedSymbol(symbolCode: string): string | null {
+  const rawMap = envFirst(["MARKET_DATA_ALPHA_VANTAGE_SYMBOL_MAP", "MARKET_DATA_PROVIDER_SYMBOL_MAP"]);
+  if (!rawMap) return null;
+
+  try {
+    const parsed: unknown = JSON.parse(rawMap);
+    if (isRecord(parsed)) {
+      return safeProviderSymbol(parsed[symbolCode] ?? parsed[symbolCode.toLowerCase()]);
+    }
+  } catch {
+    for (const entry of rawMap.split(/[;,]/)) {
+      const separatorIndex = entry.search(/[:=]/);
+      if (separatorIndex < 0) continue;
+      const key = entry.slice(0, separatorIndex).trim();
+      const value = entry.slice(separatorIndex + 1).trim();
+      if (key.toUpperCase() === symbolCode) return safeProviderSymbol(value);
+    }
+  }
+
+  return null;
+}
+
+function safeProviderSymbol(value: unknown): string | null {
+  const symbol = nullableString(value)?.toUpperCase();
+  if (!symbol || !/^[A-Z0-9._:^/-]{1,40}$/.test(symbol)) return null;
+  return symbol;
 }
 
 function extractAlphaVantageQuote(payload: unknown): Record<string, unknown> | null {
@@ -1558,10 +1632,33 @@ function isAlphaVantageHardFailure(payload: unknown): boolean {
 
 function alphaVantageFallbackReason(payload: unknown): string {
   if (!isRecord(payload)) return "provider_invalid_json";
-  if (typeof payload["Error Message"] === "string") return "alpha_vantage_unsupported_symbol";
-  if (typeof payload.Note === "string") return "alpha_vantage_rate_limit";
-  if (typeof payload.Information === "string") return "alpha_vantage_information_message";
+  if (typeof payload["Error Message"] === "string") return "alpha_vantage_invalid_symbol";
+  if (typeof payload.Note === "string") return "alpha_vantage_rate_limited";
+  if (typeof payload.Information === "string") return "alpha_vantage_information_response";
   return "none";
+}
+
+function shouldStopAlphaVantageRun(reason: string): boolean {
+  return reason === "alpha_vantage_information_response" || reason === "alpha_vantage_rate_limited";
+}
+
+function isAlphaVantageProviderMessage(reason: string | undefined): boolean {
+  return reason === "alpha_vantage_information_response" ||
+    reason === "alpha_vantage_rate_limited" ||
+    reason === "alpha_vantage_invalid_symbol";
+}
+
+function alphaVantageAggregateFallbackReason(
+  latestReason: string,
+  stopReason: string | undefined,
+  hasFallbackSymbols: boolean,
+  marketContextFallback: boolean,
+): string {
+  if (stopReason) return stopReason;
+  if (isAlphaVantageProviderMessage(latestReason)) return latestReason;
+  if (hasFallbackSymbols) return "alpha_vantage_payload_missing_or_incomplete_symbols";
+  if (marketContextFallback) return "market_context_fallback";
+  return latestReason !== "none" ? latestReason : "alpha_vantage_payload_stale_or_partial";
 }
 
 function alphaVantageObservedAt(value: string): string {
