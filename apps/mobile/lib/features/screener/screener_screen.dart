@@ -234,9 +234,19 @@ class _MarketCandidateSyncCard extends StatelessWidget {
               spacing: 8,
               runSpacing: 8,
               children: [
-                StatusBadge(label: sync!.dataQuality),
+                if (sync!.isDelayedLive)
+                  const StatusBadge(label: 'Delayed Live Data')
+                else
+                  StatusBadge(label: sync!.dataQuality),
+                if (sync!.isMultiProvider)
+                  const StatusBadge(label: 'Multi-provider'),
                 StatusBadge(label: sync!.providerStatus),
                 StatusBadge(label: '${sync!.syncedCount} synced symbols'),
+                StatusBadge(label: '${sync!.liveSymbolCount} live symbols'),
+                if (sync!.hasFallbackSymbols)
+                  StatusBadge(
+                    label: '${sync!.fallbackSymbolCount} fallback symbols',
+                  ),
                 StatusBadge(label: '${sync!.rowsInserted} rows inserted'),
               ],
             ),
@@ -272,9 +282,84 @@ class _MarketCandidateSyncCard extends StatelessWidget {
                     ),
                 ],
               ),
+            if (sync!.meta.providerDiagnostics != null) ...[
+              const SizedBox(height: 12),
+              _ProviderDiagnosticsSummary(
+                diagnostics: sync!.meta.providerDiagnostics!,
+              ),
+            ],
           ],
         ],
       ),
+    );
+  }
+}
+
+class _ProviderDiagnosticsSummary extends StatelessWidget {
+  const _ProviderDiagnosticsSummary({required this.diagnostics});
+
+  final ProviderDiagnostics diagnostics;
+
+  @override
+  Widget build(BuildContext context) {
+    final selectedMappings = diagnostics.symbolDiagnostics
+        .where((item) => item.selectedProviderSymbol != null)
+        .toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            if (diagnostics.selectedProvider != null)
+              StatusBadge(label: 'Provider ${diagnostics.selectedProvider}'),
+            StatusBadge(
+              label: diagnostics.fallbackProviderUsed
+                  ? 'Fallback aktif'
+                  : 'No symbol fallback',
+            ),
+            if (diagnostics.tertiaryProviderConfigured &&
+                diagnostics.tertiaryProviderName != null)
+              StatusBadge(
+                label: 'Tertiary ${diagnostics.tertiaryProviderName}',
+              ),
+          ],
+        ),
+        if (diagnostics.providerAttempts.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final attempt in diagnostics.providerAttempts)
+                Chip(
+                  label: Text(
+                    '${attempt.providerName} ${attempt.providerStatus}',
+                  ),
+                  visualDensity: VisualDensity.compact,
+                ),
+            ],
+          ),
+        ],
+        if (selectedMappings.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final item in selectedMappings.take(8))
+                Chip(
+                  label: Text(
+                    '${item.requestedSymbol} -> ${item.selectedProviderSymbol}',
+                  ),
+                  visualDensity: VisualDensity.compact,
+                ),
+            ],
+          ),
+        ],
+      ],
     );
   }
 }
