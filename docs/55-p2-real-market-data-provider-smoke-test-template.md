@@ -101,20 +101,42 @@ The alias map is safe to store as a Supabase secret because it contains only pro
 Tertiary IDX provider setup, optional and only stored in Supabase Edge Function secrets:
 
 ```text
-TERTIARY_MARKET_DATA_PROVIDER=<provider_name>
-TERTIARY_MARKET_DATA_PROVIDER_BASE_URL=https://provider.example.com/quote
+TERTIARY_MARKET_DATA_PROVIDER=eodhd
+TERTIARY_MARKET_DATA_PROVIDER_BASE_URL=https://eodhd.com/api/real-time
 TERTIARY_MARKET_DATA_PROVIDER_API_KEY=<set only in Supabase Edge Function secrets>
-TERTIARY_MARKET_DATA_PROVIDER_AUTH_HEADER=Authorization
 TERTIARY_MARKET_DATA_PROVIDER_SYMBOL_SUFFIX=.JK
-TERTIARY_MARKET_DATA_PROVIDER_SYMBOL_MAP={"BBRI":["BBRI.JK","BBRI:IDX"],"TLKM":["TLKM.JK","TLKM:IDX"],"UNVR":["UNVR.JK","UNVR:IDX"]}
+TERTIARY_MARKET_DATA_PROVIDER_SYMBOL_MAP={"BBRI":["BBRI.JK","BBRI.IDX","BBRI.IS","BBRI.JKSE"],"TLKM":["TLKM.JK","TLKM.IDX","TLKM.IS","TLKM.JKSE"],"UNVR":["UNVR.JK","UNVR.IDX","UNVR.IS","UNVR.JKSE"]}
 ```
 
-The tertiary adapter is a generic JSON quote path after Twelve Data and before sample fallback. It is safe to leave unconfigured. When it is missing, diagnostics should show:
+When `TERTIARY_MARKET_DATA_PROVIDER=eodhd`, the Edge Function builds EODHD quote requests as:
+
+- base from `TERTIARY_MARKET_DATA_PROVIDER_BASE_URL`
+- path `/api/real-time/{symbol}` when base URL is only the host or `/api/real-time`
+- `api_token` query parameter
+- `fmt=json` query parameter
+
+The full EODHD URL with `api_token` must never be logged, pasted into docs, or returned to Flutter.
+
+EODHD IDX symbol candidate order is intentionally small:
+
+1. Raw internal symbol, for example `BBRI`.
+2. Configured suffix form, defaulting to `BBRI.JK`.
+3. `BBRI.IDX`.
+4. `BBRI.IS`.
+5. `BBRI.JKSE`.
+
+The tertiary adapter is safe to leave unconfigured. When it is missing, diagnostics should show:
 
 - `tertiary_provider_configured = false`
 - `tertiary_provider_fallback_reason = tertiary_provider_not_configured`
 
 Tertiary requests must never expose API keys, auth headers, full URLs containing secrets, or raw provider responses.
+
+Ticker-list validation note:
+
+- Before repeated smoke tests, validate the exact EODHD ticker format for IDX symbols using the EODHD exchange/ticker-list feature or provider dashboard.
+- Keep `TERTIARY_MARKET_DATA_PROVIDER_MAX_SYMBOL_ATTEMPTS` low, default `5`, to avoid rate-limit pressure.
+- If EODHD confirms a different suffix for IDX, store that mapping in `TERTIARY_MARKET_DATA_PROVIDER_SYMBOL_MAP` as symbol aliases only, never credentials.
 
 Known IDX coverage from the latest safe smoke test:
 
@@ -176,8 +198,22 @@ Expected valid live result:
 - `ok = true`
 - `data.data_quality = live` or `delayed`
 - `meta.provider_mode = live`
+- when Alpha Vantage, Twelve Data, and EODHD all contribute valid symbol data:
+  - `meta.provider_diagnostics` is present even when `meta.provider_mode = live`
+  - `meta.provider_diagnostics.selected_provider = mixed_live_providers`
+  - `meta.provider_diagnostics.fallback_provider_used = false`
+  - `meta.provider_diagnostics.provider_failover_reason = provider_chain_resolved`
+  - `meta.provider_diagnostics.tertiary_provider_fallback_reason = none`
+  - `meta.provider_diagnostics.tertiary_provider_configured = true`
+  - `meta.provider_diagnostics.tertiary_provider_name = eodhd`
+  - `meta.provider_diagnostics.tertiary_provider_host = eodhd.com`
+  - `meta.provider_diagnostics.provider_attempts` order is Alpha Vantage, Twelve Data, EODHD, then sample provider
+  - `meta.provider_diagnostics.symbol_diagnostics` includes selected provider symbols for resolved symbols
+  - `data.fallback_symbol_count = 0`
+  - `data.fallback_symbols = []`
+- `risk_warning` includes an educational delayed-data warning when `data_quality = delayed`
 - `data.ohlcv_bars_inserted` is greater than 0 only when provider returns complete OHLC fields
-- `risk_warning` is empty or low-noise
+- `risk_warning` is empty, low-noise, or limited to delayed-data education
 - rows are written to `market_price_snapshots`
 
 Expected fallback result:
@@ -210,6 +246,7 @@ Expected fallback result:
   - `tertiary_provider_configured`
   - `tertiary_provider_name`
   - `tertiary_provider_host`
+  - `tertiary_provider_response_keys`
   - `tertiary_provider_fallback_reason`
   - `fallback_reason`
 - diagnostics must not include API key, Authorization header, JWT, service role key, full URL, or raw provider response
@@ -278,6 +315,38 @@ Generic secondary quote mapping supports common JSON keys:
 - OHLC: `open`, `high`, `low`, `close`
 - volume: `volume`, `vol`
 - time: `timestamp`, `datetime`, `date`, `time`, `observed_at`
+
+EODHD tertiary quote mapping supports:
+
+- symbol: `code`, `symbol`, `symbol_code`, `ticker`, `provider_symbol`
+- price: `close`, `price`, `last_price`, `last`, `close_price`
+- OHLC: `open`, `high`, `low`, `close`
+- volume: `volume`, `vol`
+- time: `timestamp`, `datetime`, `date`, `time`, `observed_at`
+- previous close: `previousClose`, `previous_close`, `prev_close`
+- change percent: `change_p`, `change_percent`, `percent_change`
+
+Expected all-live EODHD credential activation result:
+
+- `ok = true`
+- `tertiary_provider_configured = true`
+- `tertiary_provider_name = eodhd`
+- `tertiary_provider_host = eodhd.com`
+- `live_symbol_count = 5`
+- `fallback_symbol_count = 0`
+- `live_symbols = ASII, BBCA, BBRI, TLKM, UNVR`
+- `fallback_symbols = []`
+- EODHD selected provider symbols may include `BBRI.JK`, `TLKM.JK`, and `UNVR.JK`
+- `selected_provider = mixed_live_providers`
+- `fallback_provider_used = false`
+- `provider_failover_reason = provider_chain_resolved`
+- `tertiary_provider_fallback_reason = none`
+- `provider_diagnostics` remains present in `meta`
+- `provider_attempts` order is `alpha_vantage -> twelve_data -> eodhd -> sample_provider`
+- `symbol_diagnostics` shows selected provider symbols, including EODHD selections for `BBRI.JK`, `TLKM.JK`, and `UNVR.JK`
+- `data_quality = live` or `delayed`
+- `risk_warning` includes a delayed-data educational warning when the provider returns delayed quality
+- No provider API key, JWT token, service role key, Authorization header, full provider URL containing secrets, or raw provider response is exposed.
 
 Twelve Data quote mapping additionally supports:
 
