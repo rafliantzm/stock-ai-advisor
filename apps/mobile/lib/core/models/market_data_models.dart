@@ -402,3 +402,153 @@ class SyncMarketCandidatesResponse {
     return value.map((item) => item.toString()).toList();
   }
 }
+
+class OhlcvBar {
+  const OhlcvBar({
+    required this.symbolCode,
+    required this.timeframe,
+    required this.observedAt,
+    required this.open,
+    required this.high,
+    required this.low,
+    required this.close,
+    required this.dataQuality,
+    required this.providerName,
+    this.volume,
+  });
+
+  factory OhlcvBar.fromMap(Map<String, dynamic> map) {
+    return OhlcvBar(
+      symbolCode: map['symbol_code']?.toString() ?? '-',
+      timeframe: map['timeframe']?.toString() ?? '1d',
+      observedAt: map['observed_at']?.toString() ?? '-',
+      open: _numFromObject(map['open'] ?? map['open_price']) ?? 0,
+      high: _numFromObject(map['high'] ?? map['high_price']) ?? 0,
+      low: _numFromObject(map['low'] ?? map['low_price']) ?? 0,
+      close: _numFromObject(map['close'] ?? map['close_price']) ?? 0,
+      volume: _numFromObject(map['volume']),
+      dataQuality: map['data_quality']?.toString() ?? 'needs_more_data',
+      providerName: map['provider_name']?.toString() ?? 'provider_cache',
+    );
+  }
+
+  final String symbolCode;
+  final String timeframe;
+  final String observedAt;
+  final num open;
+  final num high;
+  final num low;
+  final num close;
+  final num? volume;
+  final String dataQuality;
+  final String providerName;
+
+  bool get isProviderBacked =>
+      dataQuality == 'delayed' ||
+      dataQuality == 'realtime' ||
+      dataQuality == 'live';
+}
+
+class ChartIndicatorSnapshot {
+  const ChartIndicatorSnapshot({
+    this.ema20,
+    this.ema50,
+    this.rsi14,
+    this.trendState,
+    this.technicalScore,
+    this.ruleVersion,
+  });
+
+  factory ChartIndicatorSnapshot.fromMap(Map<String, dynamic> map) {
+    return ChartIndicatorSnapshot(
+      ema20: _numFromObject(map['ema_20']),
+      ema50: _numFromObject(map['ema_50']),
+      rsi14: _numFromObject(map['rsi_14']),
+      trendState: map['trend_state']?.toString(),
+      technicalScore: _numFromObject(map['technical_score']),
+      ruleVersion: map['rule_version']?.toString(),
+    );
+  }
+
+  final num? ema20;
+  final num? ema50;
+  final num? rsi14;
+  final String? trendState;
+  final num? technicalScore;
+  final String? ruleVersion;
+
+  bool get hasData =>
+      ema20 != null ||
+      ema50 != null ||
+      rsi14 != null ||
+      trendState != null ||
+      technicalScore != null;
+}
+
+class StockChartDataResponse {
+  const StockChartDataResponse({
+    required this.symbolCode,
+    required this.timeframe,
+    required this.bars,
+    required this.dataQuality,
+    required this.providerName,
+    required this.providerStatus,
+    required this.disclaimer,
+    required this.riskWarnings,
+    this.indicators,
+  });
+
+  factory StockChartDataResponse.fromResult(
+    Map<String, dynamic> data,
+    Map<String, dynamic> meta,
+  ) {
+    final chart = asStringMap(data['chart']);
+    final provider = asStringMap(data['provider']);
+    final bars = asMapList(chart['bars']).map(OhlcvBar.fromMap).toList();
+    return StockChartDataResponse(
+      symbolCode: chart['symbol_code']?.toString() ?? '-',
+      timeframe: chart['timeframe']?.toString() ?? '1d',
+      bars: bars,
+      dataQuality:
+          chart['data_quality']?.toString() ??
+          meta['data_quality']?.toString() ??
+          'needs_more_data',
+      providerName:
+          provider['provider_name']?.toString() ??
+          meta['provider_name']?.toString() ??
+          'provider_cache',
+      providerStatus:
+          provider['provider_status']?.toString() ??
+          meta['provider_status']?.toString() ??
+          'OHLCV cache belum tersedia',
+      disclaimer:
+          data['disclaimer']?.toString() ??
+          'Chart data bersifat edukatif untuk watchlist context.',
+      riskWarnings: (data['risk_warning'] is List)
+          ? (data['risk_warning'] as List).map(RiskWarning.fromObject).toList()
+          : const [],
+      indicators: data['indicators'] is Map
+          ? ChartIndicatorSnapshot.fromMap(asStringMap(data['indicators']))
+          : null,
+    );
+  }
+
+  final String symbolCode;
+  final String timeframe;
+  final List<OhlcvBar> bars;
+  final String dataQuality;
+  final String providerName;
+  final String providerStatus;
+  final String disclaimer;
+  final List<RiskWarning> riskWarnings;
+  final ChartIndicatorSnapshot? indicators;
+
+  int get barCount => bars.length;
+  bool get hasBars => bars.isNotEmpty;
+  bool get isDelayedProviderBacked => dataQuality == 'delayed' && hasBars;
+}
+
+num? _numFromObject(Object? value) {
+  if (value is num) return value;
+  return num.tryParse(value?.toString() ?? '');
+}

@@ -259,21 +259,122 @@ void main() {
     );
   });
 
+  test('OHLCV adapter reads provider-backed chart data', () {
+    final response = StockChartDataResponse.fromResult(
+      {
+        'chart': {
+          'symbol_code': 'BBCA',
+          'timeframe': '1d',
+          'data_quality': 'delayed',
+          'bars': [
+            {
+              'symbol_code': 'BBCA',
+              'timeframe': '1d',
+              'observed_at': '2026-06-25T12:58:00Z',
+              'open': 9000,
+              'high': 9300,
+              'low': 8900,
+              'close': 9200,
+              'volume': 1200000,
+              'data_quality': 'delayed',
+              'provider_name': 'eodhd',
+            },
+          ],
+        },
+        'provider': {
+          'provider_name': 'eodhd',
+          'provider_status': 'Provider-backed delayed OHLCV cache tersedia',
+          'data_quality': 'delayed',
+        },
+        'risk_warning': [
+          {'level': 'low', 'message': 'Delayed provider-backed data.'},
+        ],
+        'disclaimer': 'Chart edukatif.',
+      },
+      {
+        'data_quality': 'delayed',
+        'provider_name': 'eodhd',
+        'provider_mode': 'live',
+      },
+    );
+
+    expect(response.symbolCode, 'BBCA');
+    expect(response.hasBars, isTrue);
+    expect(response.isDelayedProviderBacked, isTrue);
+    expect(response.bars.first.close, 9200);
+    expect(response.riskWarnings.first.level, 'low');
+  });
+
   testWidgets('chart lab copy reflects provider-backed preview', (
     tester,
   ) async {
     await tester.pumpWidget(
-      const MaterialApp(home: Scaffold(body: ChartLabScreen())),
+      const MaterialApp(home: Scaffold(body: ChartLabScreen(autoLoad: false))),
     );
 
     expect(
-      find.textContaining('Provider-backed delayed data tersedia'),
+      find.textContaining('Provider-backed delayed OHLCV data'),
       findsWidgets,
     );
-    expect(
-      find.textContaining('OHLCV chart interaktif sedang diintegrasikan'),
-      findsOneWidget,
+    expect(find.textContaining('OHLCV cache belum tersedia'), findsOneWidget);
+  });
+
+  testWidgets('chart lab renders provider-backed OHLCV state', (tester) async {
+    final response = StockChartDataResponse.fromResult(
+      {
+        'chart': {
+          'symbol_code': 'BBCA',
+          'timeframe': '1d',
+          'data_quality': 'delayed',
+          'bars': [
+            {
+              'symbol_code': 'BBCA',
+              'timeframe': '1d',
+              'observed_at': '2026-06-24T12:00:00Z',
+              'open': 9000,
+              'high': 9250,
+              'low': 8950,
+              'close': 9100,
+              'volume': 1000000,
+              'data_quality': 'delayed',
+              'provider_name': 'eodhd',
+            },
+            {
+              'symbol_code': 'BBCA',
+              'timeframe': '1d',
+              'observed_at': '2026-06-25T12:00:00Z',
+              'open': 9100,
+              'high': 9400,
+              'low': 9050,
+              'close': 9350,
+              'volume': 1300000,
+              'data_quality': 'delayed',
+              'provider_name': 'eodhd',
+            },
+          ],
+        },
+        'provider': {
+          'provider_name': 'eodhd',
+          'provider_status': 'Provider-backed delayed OHLCV cache tersedia',
+          'data_quality': 'delayed',
+        },
+        'disclaimer': 'Chart edukatif.',
+      },
+      {'data_quality': 'delayed', 'provider_name': 'eodhd'},
     );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ChartLabScreen(initialChartData: response, autoLoad: false),
+        ),
+      ),
+    );
+
+    expect(find.text('BBCA OHLCV'), findsOneWidget);
+    expect(find.text('2 OHLCV bars'), findsOneWidget);
+    expect(find.text('Close'), findsOneWidget);
+    expect(find.text('9350'), findsOneWidget);
   });
 
   testWidgets('stock detail copy uses delayed provider context', (
