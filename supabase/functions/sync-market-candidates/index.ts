@@ -97,21 +97,27 @@ Deno.serve(async (req) => {
 
         const { error: quoteError } = await supabase
           .from("market_price_snapshots")
-          .insert(rows.priceSnapshots.map(toPriceSnapshotDbRow));
-        if (quoteError) throw databaseError("Failed to insert market price snapshots", quoteError);
+          .upsert(rows.priceSnapshots.map(toPriceSnapshotDbRow), {
+            onConflict: "symbol_code,provider_name,observed_at",
+          });
+        if (quoteError) throw databaseError("Failed to upsert market price snapshots", quoteError);
 
         if (rows.ohlcvBars.length > 0) {
           const { error: ohlcvError } = await supabase
             .from("ohlcv_bars")
-            .insert(rows.ohlcvBars.map(toOhlcvBarDbRow));
-          if (ohlcvError) throw databaseError("Failed to insert OHLCV bars", ohlcvError);
+            .upsert(rows.ohlcvBars.map(toOhlcvBarDbRow), {
+              onConflict: "symbol_code,provider_name,timeframe,observed_at",
+            });
+          if (ohlcvError) throw databaseError("Failed to upsert OHLCV bars", ohlcvError);
         }
 
         const { error: indicatorError } = await supabase
           .from("technical_indicator_snapshots")
-          .insert(rows.technicalIndicators.map(toTechnicalIndicatorDbRow));
+          .upsert(rows.technicalIndicators.map(toTechnicalIndicatorDbRow), {
+            onConflict: "symbol_code,timeframe,observed_at,rule_version",
+          });
         if (indicatorError) {
-          throw databaseError("Failed to insert technical indicator snapshots", indicatorError);
+          throw databaseError("Failed to upsert technical indicator snapshots", indicatorError);
         }
 
         rowsInserted += rows.priceSnapshots.length + rows.ohlcvBars.length + rows.technicalIndicators.length;
@@ -119,12 +125,22 @@ Deno.serve(async (req) => {
         if (rows.marketContext) {
           const { error: contextError } = await supabase
             .from("market_context_snapshots")
-            .insert(toMarketContextDbRow(rows.marketContext));
-          if (contextError) throw databaseError("Failed to insert market context snapshot", contextError);
+            .upsert(toMarketContextDbRow(rows.marketContext), {
+              onConflict: "market_code,index_symbol,provider_name,observed_at",
+            });
+          if (contextError) throw databaseError("Failed to upsert market context snapshot", contextError);
           rowsInserted += 1;
         }
 
         const finishedAt = new Date().toISOString();
+        const partialLiveMeta = rows.liveSymbols.length > 0
+          ? {
+            live_symbol_count: rows.liveSymbols.length,
+            fallback_symbol_count: rows.fallbackSymbols.length,
+            live_symbols: rows.liveSymbols,
+            fallback_symbols: rows.fallbackSymbols,
+          }
+          : undefined;
         const { error: updateError } = await supabase
           .from("provider_sync_runs")
           .update({
@@ -143,12 +159,25 @@ Deno.serve(async (req) => {
               used_production_adapter: rows.usedLiveAdapter,
               used_live_adapter: rows.usedLiveAdapter,
               provider_mode: rows.providerMode,
+              ...(partialLiveMeta ?? {}),
               contract_version: "p2_market_data_provider_contract_v1",
             },
           })
           .eq("id", syncRun.id);
 
         if (updateError) throw databaseError("Failed to finalize provider sync run", updateError);
+
+        const responseMeta: Record<string, unknown> = {
+          rule_version: "p2_market_data_provider_sync_v1",
+          data_quality: rows.dataQuality,
+          provider_name: provider.provider_name,
+          provider_status: rows.providerStatus,
+          provider_mode: rows.providerMode,
+          ...(partialLiveMeta ?? {}),
+        };
+        if (rows.providerMode === "provider_error" && rows.diagnostics) {
+          responseMeta.provider_diagnostics = rows.diagnostics;
+        }
 
         return ok({
           sync_run_id: syncRun.id,
@@ -166,16 +195,11 @@ Deno.serve(async (req) => {
           synced_count: symbols.length,
           rows_inserted: rowsInserted,
           ohlcv_bars_inserted: rows.ohlcvBars.length,
+          ...(partialLiveMeta ?? {}),
           data_quality: rows.dataQuality,
           provider_status: rows.providerStatus,
           risk_warning: rows.riskWarning,
-        }, {
-          rule_version: "p2_market_data_provider_sync_v1",
-          data_quality: rows.dataQuality,
-          provider_name: provider.provider_name,
-          provider_status: rows.providerStatus,
-          provider_mode: rows.providerMode,
-        });
+        }, responseMeta);
       }
 
       const finishedAt = new Date().toISOString();
