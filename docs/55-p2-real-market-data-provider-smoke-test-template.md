@@ -77,7 +77,7 @@ SECONDARY_MARKET_DATA_PROVIDER_BASE_URL=https://api.twelvedata.com
 SECONDARY_MARKET_DATA_PROVIDER_API_KEY=<set only in Supabase Edge Function secrets>
 SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_SUFFIX=.JK
 SECONDARY_MARKET_DATA_PROVIDER_EXCHANGE=IDX
-SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_MAP={"BBRI":"BBRI:IDX","TLKM":"TLKM:IDX","UNVR":"UNVR:IDX"}
+SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_MAP={"BBRI":["BBRI.JK","BBRI:IDX"],"TLKM":["TLKM.JK","TLKM:IDX"],"UNVR":["UNVR.JK","UNVR:IDX"]}
 ```
 
 Twelve Data requests are built inside Edge Functions as a safe quote call:
@@ -94,9 +94,19 @@ Twelve Data IDX symbol candidate order is intentionally small to reduce provider
 1. Raw internal symbol, for example `BBRI`.
 2. Suffix form from `SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_SUFFIX`, for example `BBRI.JK`.
 3. Exchange form from `SECONDARY_MARKET_DATA_PROVIDER_EXCHANGE`, for example `BBRI:IDX`.
-4. Optional configured alias from `SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_MAP`.
+4. Optional configured aliases from `SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_MAP`.
 
 The alias map is safe to store as a Supabase secret because it contains only provider symbol aliases, not credentials. Do not place API keys or URLs with query strings inside the map.
+
+Known IDX coverage from the latest safe smoke test:
+
+- `ASII`: live through provider chain.
+- `BBCA`: live through Twelve Data secondary provider.
+- `BBRI`: fallback after `BBRI`, `BBRI.JK`, and `BBRI:IDX` returned provider 404.
+- `TLKM`: fallback after `TLKM`, `TLKM.JK`, and `TLKM:IDX` returned provider 404.
+- `UNVR`: fallback/rate-limited after Twelve Data returned provider 429.
+
+After a provider 429, avoid repeated smoke tests for the same key/window. Wait for the provider quota window to reset before trying expanded symbol coverage again.
 
 Actual:
 
@@ -240,6 +250,8 @@ Twelve Data troubleshooting:
 - Non-JSON responses are classified as `secondary_provider_invalid_json`.
 - Error JSON responses are classified as `secondary_provider_error_response`.
 - Provider HTTP 404 responses are classified as `secondary_provider_http_404`; the function then tries the next safe symbol candidate when available.
+- Provider HTTP 429 responses are classified as `secondary_provider_http_429`, and provider JSON rate-limit messages are classified as `secondary_provider_rate_limited`.
+- When rate limiting is detected, the function stops extra candidates for that symbol and keeps stale/sample fallback.
 - Diagnostics may include status code, content type, safe top-level keys, and provider host only.
 - Do not store or paste raw response bodies when they include provider details.
 

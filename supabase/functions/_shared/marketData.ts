@@ -1978,8 +1978,12 @@ function normalizeUrlInput(value: string): string {
 function secondaryProviderPayloadFallbackReason(payload: unknown): string {
   if (!isRecord(payload)) return "secondary_provider_no_valid_quote";
   const status = nullableString(payload.status)?.toLowerCase();
+  const code = payload.code === undefined || payload.code === null ? null : String(payload.code).trim().toLowerCase();
+  const message = nullableString(payload.message)?.toLowerCase();
+  if (status === "error" && (code === "429" || message?.includes("rate"))) return "secondary_provider_rate_limited";
   if (status === "error") return "secondary_provider_error_response";
   if (payload.code !== undefined && payload.message !== undefined && payload.close === undefined && payload.price === undefined) {
+    if (code === "429" || message?.includes("rate")) return "secondary_provider_rate_limited";
     return "secondary_provider_error_response";
   }
   return "none";
@@ -2059,16 +2063,32 @@ function twelveDataSymbolCandidates(symbolCode: string): string[] {
     pushSafeProviderSymbol(candidates, `${normalized}:${exchange}`);
   }
 
-  pushSafeProviderSymbol(candidates, twelveDataMappedSymbol(normalized));
+  for (const symbol of configuredTwelveDataMappedSymbols(normalized)) {
+    pushSafeProviderSymbol(candidates, symbol);
+  }
+  for (const symbol of defaultTwelveDataMappedSymbols(normalized)) {
+    pushSafeProviderSymbol(candidates, symbol);
+  }
   return candidates.slice(0, secondaryProviderMaxSymbolAttempts());
 }
 
-function twelveDataMappedSymbol(symbolCode: string): string | null {
-  return mappedProviderSymbol(symbolCode, [
+function configuredTwelveDataMappedSymbols(symbolCode: string): string[] {
+  return mappedProviderSymbols(symbolCode, [
     "SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_MAP",
     "MARKET_DATA_SECONDARY_PROVIDER_SYMBOL_MAP",
     "TWELVE_DATA_SYMBOL_MAP",
   ]);
+}
+
+function defaultTwelveDataMappedSymbols(symbolCode: string): string[] {
+  const defaultAliases: Record<string, string[]> = {
+    ASII: ["ASII.JK", "ASII:IDX"],
+    BBCA: ["BBCA.JK", "BBCA:IDX"],
+    BBRI: ["BBRI.JK", "BBRI:IDX"],
+    TLKM: ["TLKM.JK", "TLKM:IDX"],
+    UNVR: ["UNVR.JK", "UNVR:IDX"],
+  };
+  return defaultAliases[symbolCode] ?? [];
 }
 
 function secondaryProviderMaxSymbolAttempts(): number {
@@ -2086,7 +2106,10 @@ function pushSafeProviderSymbol(candidates: string[], value: unknown): void {
 }
 
 function shouldStopSecondaryProviderCandidateAttempts(reason: string | undefined): boolean {
-  return reason === "secondary_provider_timeout" || reason === "secondary_provider_request_failed";
+  return reason === "secondary_provider_timeout" ||
+    reason === "secondary_provider_request_failed" ||
+    reason === "secondary_provider_http_429" ||
+    reason === "secondary_provider_rate_limited";
 }
 
 async function fetchLiveMarketContext(
@@ -2232,17 +2255,17 @@ function alphaVantageSymbolCandidates(symbolCode: string): string[] {
 }
 
 function alphaVantageMappedSymbol(symbolCode: string): string | null {
-  return mappedProviderSymbol(symbolCode, ["MARKET_DATA_ALPHA_VANTAGE_SYMBOL_MAP", "MARKET_DATA_PROVIDER_SYMBOL_MAP"]);
+  return mappedProviderSymbols(symbolCode, ["MARKET_DATA_ALPHA_VANTAGE_SYMBOL_MAP", "MARKET_DATA_PROVIDER_SYMBOL_MAP"])[0] ?? null;
 }
 
-function mappedProviderSymbol(symbolCode: string, envNames: string[]): string | null {
+function mappedProviderSymbols(symbolCode: string, envNames: string[]): string[] {
   const rawMap = envFirst(envNames);
-  if (!rawMap) return null;
+  if (!rawMap) return [];
 
   try {
     const parsed: unknown = JSON.parse(rawMap);
     if (isRecord(parsed)) {
-      return safeProviderSymbol(parsed[symbolCode] ?? parsed[symbolCode.toLowerCase()]);
+      return safeProviderSymbolList(parsed[symbolCode] ?? parsed[symbolCode.toLowerCase()]);
     }
   } catch {
     for (const entry of rawMap.split(/[;,]/)) {
@@ -2250,11 +2273,16 @@ function mappedProviderSymbol(symbolCode: string, envNames: string[]): string | 
       if (separatorIndex < 0) continue;
       const key = entry.slice(0, separatorIndex).trim();
       const value = entry.slice(separatorIndex + 1).trim();
-      if (key.toUpperCase() === symbolCode) return safeProviderSymbol(value);
+      if (key.toUpperCase() === symbolCode) return safeProviderSymbolList(value);
     }
   }
 
-  return null;
+  return [];
+}
+
+function safeProviderSymbolList(value: unknown): string[] {
+  const values = Array.isArray(value) ? value : nullableString(value)?.split("|") ?? [];
+  return [...new Set(values.map((item) => safeProviderSymbol(item)).filter((item): item is string => Boolean(item)))];
 }
 
 function safeProviderSymbol(value: unknown): string | null {
