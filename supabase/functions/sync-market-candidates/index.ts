@@ -9,8 +9,10 @@ import {
   DEFAULT_PROVIDER_NAME,
   ensureProviderSource,
   hasSecondaryProviderConfig,
+  hasTertiaryProviderConfig,
   loadSymbols,
   marketSecondaryProviderName,
+  marketTertiaryProviderName,
   normalizeSymbolCodes,
   numberFromUnknown,
   providerMeta,
@@ -56,6 +58,9 @@ Deno.serve(async (req) => {
     const secondaryProvider = hasSecondaryProviderConfig()
       ? await ensureProviderSource(supabase, marketSecondaryProviderName(), "vendor")
       : undefined;
+    const tertiaryProvider = hasTertiaryProviderConfig()
+      ? await ensureProviderSource(supabase, marketTertiaryProviderName(), "vendor")
+      : undefined;
     const symbols = await loadSymbols(supabase, symbolCodes, limit);
     if (symbolCodes.length > 0 && symbols.length === 0) {
       throw notFound("No matching active symbols found", { symbol_codes: symbolCodes });
@@ -99,6 +104,7 @@ Deno.serve(async (req) => {
           includeMarketContext,
           fallbackProvider,
           secondaryProvider,
+          tertiaryProvider,
         );
 
         const { error: quoteError } = await supabase

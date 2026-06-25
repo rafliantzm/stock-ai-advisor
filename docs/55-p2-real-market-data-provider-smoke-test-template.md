@@ -98,6 +98,24 @@ Twelve Data IDX symbol candidate order is intentionally small to reduce provider
 
 The alias map is safe to store as a Supabase secret because it contains only provider symbol aliases, not credentials. Do not place API keys or URLs with query strings inside the map.
 
+Tertiary IDX provider setup, optional and only stored in Supabase Edge Function secrets:
+
+```text
+TERTIARY_MARKET_DATA_PROVIDER=<provider_name>
+TERTIARY_MARKET_DATA_PROVIDER_BASE_URL=https://provider.example.com/quote
+TERTIARY_MARKET_DATA_PROVIDER_API_KEY=<set only in Supabase Edge Function secrets>
+TERTIARY_MARKET_DATA_PROVIDER_AUTH_HEADER=Authorization
+TERTIARY_MARKET_DATA_PROVIDER_SYMBOL_SUFFIX=.JK
+TERTIARY_MARKET_DATA_PROVIDER_SYMBOL_MAP={"BBRI":["BBRI.JK","BBRI:IDX"],"TLKM":["TLKM.JK","TLKM:IDX"],"UNVR":["UNVR.JK","UNVR:IDX"]}
+```
+
+The tertiary adapter is a generic JSON quote path after Twelve Data and before sample fallback. It is safe to leave unconfigured. When it is missing, diagnostics should show:
+
+- `tertiary_provider_configured = false`
+- `tertiary_provider_fallback_reason = tertiary_provider_not_configured`
+
+Tertiary requests must never expose API keys, auth headers, full URLs containing secrets, or raw provider responses.
+
 Known IDX coverage from the latest safe smoke test:
 
 - `ASII`: live through provider chain.
@@ -189,6 +207,10 @@ Expected fallback result:
   - `secondary_provider_content_type`
   - `secondary_provider_response_keys`
   - `secondary_provider_fallback_reason`
+  - `tertiary_provider_configured`
+  - `tertiary_provider_name`
+  - `tertiary_provider_host`
+  - `tertiary_provider_fallback_reason`
   - `fallback_reason`
 - diagnostics must not include API key, Authorization header, JWT, service role key, full URL, or raw provider response
 
@@ -209,7 +231,8 @@ Provider priority strategy:
 
 1. Primary provider: `alpha_vantage`.
 2. Twelve Data or secondary provider adapter, using configured secondary/fallback provider env when available.
-3. Stale/sample fallback.
+3. Tertiary IDX provider adapter, using configured tertiary provider env when available.
+4. Stale/sample fallback.
 
 Expected secondary provider diagnostics:
 
@@ -229,6 +252,24 @@ Expected secondary provider diagnostics:
   - `provider_configured = true`
   - `provider_status = attempted`
   - `fallback_reason = secondary_provider_no_valid_quote` or another safe secondary fallback reason
+
+Expected tertiary provider diagnostics:
+
+- When no tertiary provider env exists:
+  - `provider_name = tertiary_provider`
+  - `provider_role = tertiary`
+  - `provider_configured = false`
+  - `provider_status = skipped`
+  - `fallback_reason = tertiary_provider_not_configured`
+- When tertiary provider env exists and returns valid quote data:
+  - `provider_role = tertiary`
+  - `provider_configured = true`
+  - `provider_status = selected` or `attempted`
+- When tertiary provider env exists but no valid quote is returned:
+  - `provider_role = tertiary`
+  - `provider_configured = true`
+  - `provider_status = attempted`
+  - `fallback_reason = tertiary_provider_no_valid_quote` or another safe tertiary fallback reason
 
 Generic secondary quote mapping supports common JSON keys:
 
@@ -297,6 +338,7 @@ Rate-limit/provider-message handling:
 - Diagnostics include only safe metadata such as `provider_response_keys`, HTTP status, content type, host, and fallback reason.
 - Provider failover diagnostics include `provider_attempts`, `selected_provider`, `fallback_provider_used`, and `provider_failover_reason`.
 - Secondary provider diagnostics include `secondary_provider_configured` and a secondary provider entry inside `provider_attempts`.
+- Tertiary provider diagnostics include `tertiary_provider_configured` and a tertiary provider entry inside `provider_attempts`.
 - Raw provider response and credentials must not be pasted into this report.
 
 ## Test 2 - Get Market Context

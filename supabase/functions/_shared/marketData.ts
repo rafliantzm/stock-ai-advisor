@@ -66,12 +66,16 @@ export type ProviderDiagnostics = {
   secondary_provider_content_type?: string | null;
   secondary_provider_response_keys?: string[];
   secondary_provider_fallback_reason?: string;
+  tertiary_provider_configured?: boolean;
+  tertiary_provider_name?: string;
+  tertiary_provider_host?: string | null;
+  tertiary_provider_fallback_reason?: string;
   fallback_reason: string;
 };
 
 export type ProviderAttemptDiagnostics = {
   provider_name: string;
-  provider_role: "primary" | "secondary" | "sample";
+  provider_role: "primary" | "secondary" | "tertiary" | "sample";
   provider_configured: boolean;
   provider_status: "attempted" | "skipped" | "selected" | "fallback";
   data_quality: MarketDataQuality;
@@ -260,6 +264,13 @@ type AlphaVantageStopState = {
 };
 
 type SecondaryProviderQuoteResult = {
+  quote: ProviderQuoteResponse;
+  providerSymbol: string;
+  attemptedProviderSymbols: string[];
+  diagnostics: ProviderDiagnostics;
+};
+
+type TertiaryProviderQuoteResult = {
   quote: ProviderQuoteResponse;
   providerSymbol: string;
   attemptedProviderSymbols: string[];
@@ -463,10 +474,50 @@ export function hasSecondaryProviderConfig(): boolean {
   );
 }
 
+export function marketTertiaryProviderName(): string {
+  return envFirst([
+    "TERTIARY_MARKET_DATA_PROVIDER",
+    "MARKET_DATA_TERTIARY_PROVIDER",
+    "MARKET_DATA_TERTIARY_PROVIDER_NAME",
+  ]) ?? "tertiary_provider";
+}
+
+function tertiaryProviderBaseUrl(): string | null {
+  return envFirst([
+    "TERTIARY_MARKET_DATA_PROVIDER_BASE_URL",
+    "MARKET_DATA_TERTIARY_PROVIDER_BASE_URL",
+    "MARKET_DATA_TERTIARY_API_BASE_URL",
+  ]);
+}
+
+function tertiaryProviderApiKey(): string | null {
+  return envFirst([
+    "TERTIARY_MARKET_DATA_PROVIDER_API_KEY",
+    "MARKET_DATA_TERTIARY_PROVIDER_API_KEY",
+    "MARKET_DATA_TERTIARY_API_KEY",
+  ]);
+}
+
+export function hasTertiaryProviderConfig(): boolean {
+  return Boolean(
+    envFirst([
+      "TERTIARY_MARKET_DATA_PROVIDER",
+      "MARKET_DATA_TERTIARY_PROVIDER",
+      "MARKET_DATA_TERTIARY_PROVIDER_NAME",
+    ]) && tertiaryProviderBaseUrl() && tertiaryProviderApiKey(),
+  );
+}
+
 function secondaryProviderFallbackReason(): string {
   return hasSecondaryProviderConfig()
     ? "secondary_provider_no_valid_quote"
     : "secondary_provider_not_configured";
+}
+
+function tertiaryProviderFallbackReason(): string {
+  return hasTertiaryProviderConfig()
+    ? "tertiary_provider_no_valid_quote"
+    : "tertiary_provider_not_configured";
 }
 
 function secondaryProviderDiagnostics(
@@ -495,11 +546,29 @@ function secondaryProviderDiagnostics(
   };
 }
 
+function tertiaryProviderDiagnostics(
+  fallbackReason: string,
+): Pick<
+  ProviderDiagnostics,
+  | "tertiary_provider_configured"
+  | "tertiary_provider_name"
+  | "tertiary_provider_host"
+  | "tertiary_provider_fallback_reason"
+> {
+  return {
+    tertiary_provider_configured: hasTertiaryProviderConfig(),
+    tertiary_provider_name: marketTertiaryProviderName(),
+    tertiary_provider_host: safeProviderHost(tertiaryProviderBaseUrl()),
+    tertiary_provider_fallback_reason: fallbackReason,
+  };
+}
+
 function providerFallbackAttempts(
   runtime: ProviderRuntime,
   selectedProvider: string,
   fallbackProviderUsed: boolean,
   secondaryProviderUsed: boolean,
+  tertiaryProviderUsed: boolean,
   failoverReason: string,
   dataQuality: MarketDataQuality,
 ): ProviderAttemptDiagnostics[] {
@@ -526,6 +595,20 @@ function providerFallbackAttempts(
     fallback_reason: secondaryProviderUsed ? "none" : secondaryProviderFallbackReason(),
   });
 
+  const tertiaryProviderConfigured = hasTertiaryProviderConfig();
+  attempts.push({
+    provider_name: marketTertiaryProviderName(),
+    provider_role: "tertiary",
+    provider_configured: tertiaryProviderConfigured,
+    provider_status: tertiaryProviderUsed
+      ? selectedProvider === marketTertiaryProviderName() ? "selected" : "attempted"
+      : tertiaryProviderConfigured && fallbackProviderUsed
+      ? "attempted"
+      : "skipped",
+    data_quality: tertiaryProviderUsed ? dataQuality : "stale",
+    fallback_reason: tertiaryProviderUsed ? "none" : tertiaryProviderFallbackReason(),
+  });
+
   attempts.push({
     provider_name: DEFAULT_PROVIDER_NAME,
     provider_role: "sample",
@@ -545,10 +628,13 @@ function withProviderFallbackDiagnostics(
   fallbackProviderUsed: boolean,
   failoverReason: string,
   secondaryProviderUsed = false,
+  tertiaryProviderUsed = false,
 ): ProviderDiagnostics | undefined {
   if (!diagnostics) return undefined;
   const selectedProvider = fallbackProviderUsed
     ? DEFAULT_PROVIDER_NAME
+    : tertiaryProviderUsed
+    ? marketTertiaryProviderName()
     : secondaryProviderUsed
     ? marketSecondaryProviderName()
     : runtime.activeProviderName;
@@ -559,6 +645,7 @@ function withProviderFallbackDiagnostics(
       selectedProvider,
       fallbackProviderUsed,
       secondaryProviderUsed,
+      tertiaryProviderUsed,
       failoverReason,
       dataQuality,
     ),
@@ -566,6 +653,7 @@ function withProviderFallbackDiagnostics(
     fallback_provider_used: fallbackProviderUsed,
     provider_failover_reason: failoverReason,
     ...secondaryProviderDiagnostics(secondaryProviderFallbackReason()),
+    ...tertiaryProviderDiagnostics(tertiaryProviderFallbackReason()),
   };
 }
 
@@ -910,6 +998,7 @@ export async function buildMarketCandidateRows(
   includeMarketContext: boolean,
   fallbackProvider: ProviderSource = provider,
   secondaryProvider?: ProviderSource,
+  tertiaryProvider?: ProviderSource,
 ): Promise<MarketCandidateRows> {
   if (runtime.isLiveConfigured) {
     try {
@@ -921,6 +1010,7 @@ export async function buildMarketCandidateRows(
         observedAt,
         includeMarketContext,
         secondaryProvider,
+        tertiaryProvider,
       );
       if (liveRows.priceSnapshots.length > 0 || !includeMarketContext || liveRows.marketContext) {
         return liveRows;
@@ -1085,10 +1175,20 @@ async function fetchLiveCandidateRows(
   observedAt: string,
   includeMarketContext: boolean,
   secondaryProvider?: ProviderSource,
+  tertiaryProvider?: ProviderSource,
 ): Promise<MarketCandidateRows> {
   assertSupportedLiveAdapter(runtime);
   if (runtime.providerAdapter === "alpha_vantage") {
-    return fetchAlphaVantageCandidateRows(symbols, provider, fallbackProvider, runtime, observedAt, includeMarketContext, secondaryProvider);
+    return fetchAlphaVantageCandidateRows(
+      symbols,
+      provider,
+      fallbackProvider,
+      runtime,
+      observedAt,
+      includeMarketContext,
+      secondaryProvider,
+      tertiaryProvider,
+    );
   }
 
   const quoteResult = await providerPostJson("/quotes", {
@@ -1342,6 +1442,7 @@ async function fetchAlphaVantageCandidateRows(
   observedAt: string,
   includeMarketContext: boolean,
   secondaryProvider?: ProviderSource,
+  tertiaryProvider?: ProviderSource,
 ): Promise<MarketCandidateRows> {
   const priceSnapshots: NormalizedPriceSnapshot[] = [];
   const ohlcvBars: NormalizedOhlcvBar[] = [];
@@ -1498,6 +1599,60 @@ async function fetchAlphaVantageCandidateRows(
     }
   }
 
+  let tertiaryProviderUsed = false;
+  if (fallbackSymbols.length > 0 && tertiaryProvider && hasTertiaryProviderConfig()) {
+    const tertiaryCandidates = symbols.filter((symbol) => fallbackSymbols.includes(symbol.symbol_code));
+    for (const symbol of tertiaryCandidates) {
+      try {
+        const tertiaryResult = await fetchTertiaryProviderQuote(symbol);
+        latestDiagnostics = tertiaryResult.diagnostics;
+        const normalizedQuote = normalizeProviderQuote(symbol, tertiaryResult.quote, observedAt, tertiaryProvider);
+        if (!hasUsablePriceSnapshot(normalizedQuote)) {
+          throw new ProviderFetchError("Tertiary provider quote has no usable price fields", {
+            ...tertiaryResult.diagnostics,
+            fallback_reason: "tertiary_provider_quote_incomplete",
+            symbol_diagnostics: [
+              alphaVantageSymbolDiagnostic(
+                symbol.symbol_code,
+                tertiaryResult.attemptedProviderSymbols,
+                tertiaryResult.providerSymbol,
+                "tertiary_provider_quote_incomplete",
+              ),
+            ],
+          });
+        }
+
+        replacePriceSnapshot(priceSnapshots, normalizedQuote);
+        const tertiaryOhlcv = ohlcvBarFromQuote(symbol, normalizedQuote, tertiaryProvider);
+        if (tertiaryOhlcv) replaceOhlcvBar(ohlcvBars, tertiaryOhlcv);
+        replaceTechnicalIndicator(technicalIndicators, providerIndicatorFromQuote(symbol, normalizedQuote, tertiaryProvider));
+        removeValue(fallbackSymbols, symbol.symbol_code);
+        removeSymbolWarnings(fallbackWarnings, symbol.symbol_code);
+        if (!liveSymbols.includes(symbol.symbol_code)) liveSymbols.push(symbol.symbol_code);
+        tertiaryProviderUsed = true;
+        symbolDiagnostics.push(alphaVantageSymbolDiagnostic(
+          symbol.symbol_code,
+          tertiaryResult.attemptedProviderSymbols,
+          normalizedQuote.provider_symbol,
+          "none",
+        ));
+      } catch (error) {
+        const tertiaryDiagnostics = diagnosticsFromError(error, runtime, symbols.length, "tertiary_provider_fetch_failed");
+        latestDiagnostics = {
+          ...tertiaryDiagnostics,
+          fallback_reason: tertiaryDiagnostics.tertiary_provider_fallback_reason ??
+            tertiaryDiagnostics.fallback_reason,
+        };
+        symbolDiagnostics.push(alphaVantageSymbolDiagnostic(
+          symbol.symbol_code,
+          tertiaryAttemptedSymbolsFromDiagnostics(tertiaryDiagnostics),
+          null,
+          latestDiagnostics.fallback_reason,
+        ));
+      }
+    }
+  }
+
   let marketContext: NormalizedMarketContext | null = null;
   let marketContextFallback = false;
   if (includeMarketContext) {
@@ -1544,8 +1699,16 @@ async function fetchAlphaVantageCandidateRows(
       ...latestDiagnostics,
       symbol_diagnostics: symbolDiagnostics,
       fallback_reason: providerFailoverReason,
-    }, runtime, dataQuality, sampleFallbackUsed, providerFailoverReason, secondaryProviderUsed)
-    : withProviderFallbackDiagnostics(latestDiagnostics, runtime, dataQuality, false, providerFailoverReason, secondaryProviderUsed);
+    }, runtime, dataQuality, sampleFallbackUsed, providerFailoverReason, secondaryProviderUsed, tertiaryProviderUsed)
+    : withProviderFallbackDiagnostics(
+      latestDiagnostics,
+      runtime,
+      dataQuality,
+      false,
+      providerFailoverReason,
+      secondaryProviderUsed,
+      tertiaryProviderUsed,
+    );
 
   return {
     priceSnapshots,
@@ -1927,6 +2090,152 @@ async function secondaryProviderQuery(providerSymbol: string): Promise<ProviderJ
   }
 }
 
+async function fetchTertiaryProviderQuote(symbol: SymbolRow): Promise<TertiaryProviderQuoteResult> {
+  if (!hasTertiaryProviderConfig()) {
+    throw new ProviderFetchError("Tertiary provider is not configured", {
+      ...buildProviderDiagnosticsFromConfig(tertiaryProviderBaseUrl(), false, 1, "tertiary_provider_not_configured"),
+      ...tertiaryProviderDiagnostics("tertiary_provider_not_configured"),
+    });
+  }
+
+  const candidates = tertiaryProviderSymbolCandidates(symbol.symbol_code);
+  const attemptedProviderSymbols: string[] = [];
+  let latestDiagnostics: ProviderDiagnostics | undefined;
+  for (const providerSymbol of candidates) {
+    attemptedProviderSymbols.push(providerSymbol);
+    try {
+      const result = await tertiaryProviderQuery(providerSymbol);
+      latestDiagnostics = result.diagnostics;
+      const quote = normalizeSecondaryProviderQuotePayload(symbol, result.payload);
+      if (quote) {
+        return {
+          quote,
+          providerSymbol,
+          attemptedProviderSymbols,
+          diagnostics: result.diagnostics,
+        };
+      }
+      latestDiagnostics = {
+        ...result.diagnostics,
+        fallback_reason: "tertiary_provider_no_valid_quote",
+      };
+    } catch (error) {
+      latestDiagnostics = diagnosticsFromError(error, resolveProviderRuntime(), 1, "tertiary_provider_fetch_failed");
+      if (shouldStopTertiaryProviderCandidateAttempts(latestDiagnostics.fallback_reason)) {
+        break;
+      }
+    }
+  }
+
+  throw new ProviderFetchError("Tertiary provider returned no usable quote", {
+    ...(latestDiagnostics ??
+      buildProviderDiagnosticsFromConfig(
+        tertiaryProviderBaseUrl(),
+        Boolean(tertiaryProviderApiKey()),
+        1,
+        "tertiary_provider_no_valid_quote",
+      )),
+    ...tertiaryProviderDiagnostics(
+      latestDiagnostics?.tertiary_provider_fallback_reason ?? "tertiary_provider_no_valid_quote",
+    ),
+    fallback_reason: latestDiagnostics?.fallback_reason && latestDiagnostics.fallback_reason !== "none"
+      ? latestDiagnostics.fallback_reason
+      : "tertiary_provider_no_valid_quote",
+    symbol_diagnostics: [
+      alphaVantageSymbolDiagnostic(
+        symbol.symbol_code,
+        attemptedProviderSymbols,
+        null,
+        latestDiagnostics?.fallback_reason && latestDiagnostics.fallback_reason !== "none"
+          ? latestDiagnostics.fallback_reason
+          : "tertiary_provider_no_valid_quote",
+      ),
+    ],
+  });
+}
+
+async function tertiaryProviderQuery(providerSymbol: string): Promise<ProviderJsonResult> {
+  const baseUrl = tertiaryProviderBaseUrl();
+  const apiKey = tertiaryProviderApiKey();
+  const diagnostics = {
+    ...buildProviderDiagnosticsFromConfig(baseUrl, Boolean(apiKey), 1, "tertiary_provider_request_started"),
+    ...tertiaryProviderDiagnostics("tertiary_provider_request_started"),
+  };
+  if (!baseUrl || !apiKey) {
+    throw new ProviderFetchError("Tertiary provider env is incomplete", {
+      ...diagnostics,
+      ...tertiaryProviderDiagnostics("tertiary_provider_not_configured"),
+      fallback_reason: "tertiary_provider_not_configured",
+    });
+  }
+
+  const url = buildTertiaryProviderQuoteUrl(baseUrl, providerSymbol);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "Accept": "application/json",
+        ...buildTertiaryProviderAuthHeaders(apiKey),
+      },
+      signal: controller.signal,
+    });
+    const contentType = response.headers.get("content-type");
+    const text = await response.text();
+    let payload: unknown;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      throw new ProviderFetchError("Tertiary provider returned invalid JSON", {
+        ...diagnostics,
+        ...tertiaryProviderDiagnostics("tertiary_provider_invalid_json"),
+        provider_http_status: response.status,
+        provider_status_code: response.status,
+        provider_content_type: contentType,
+        fallback_reason: "tertiary_provider_invalid_json",
+      });
+    }
+
+    const responseKeys = topLevelJsonKeys(payload);
+    const providerPayloadError = tertiaryProviderPayloadFallbackReason(payload);
+    const fallbackReason = response.ok ? providerPayloadError : tertiaryHttpFallbackReason(response.status);
+    const responseDiagnostics: ProviderDiagnostics = {
+      ...diagnostics,
+      ...tertiaryProviderDiagnostics(fallbackReason),
+      provider_http_status: response.status,
+      provider_status_code: response.status,
+      provider_content_type: contentType,
+      json_top_level_keys: responseKeys,
+      provider_response_keys: responseKeys,
+      fallback_reason: fallbackReason,
+    };
+    if (!response.ok) {
+      throw new ProviderFetchError(`Tertiary provider returned HTTP ${response.status}`, responseDiagnostics);
+    }
+    if (providerPayloadError !== "none") {
+      throw new ProviderFetchError("Tertiary provider returned error payload", responseDiagnostics);
+    }
+
+    return {
+      payload,
+      diagnostics: responseDiagnostics,
+    };
+  } catch (error) {
+    if (error instanceof ProviderFetchError) throw error;
+    const fallbackReason = error instanceof DOMException && error.name === "AbortError"
+      ? "tertiary_provider_timeout"
+      : "tertiary_provider_request_failed";
+    throw new ProviderFetchError("Tertiary provider request failed", {
+      ...diagnostics,
+      ...tertiaryProviderDiagnostics(fallbackReason),
+      fallback_reason: fallbackReason,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function buildTwelveDataQuoteUrl(baseUrl: string, providerSymbol: string, apiKey: string): URL {
   const normalizedBase = normalizeUrlInput(baseUrl);
   const url = new URL(normalizedBase);
@@ -1971,6 +2280,36 @@ function buildGenericSecondaryAuthHeaders(apiKey: string): Record<string, string
   };
 }
 
+function buildTertiaryProviderQuoteUrl(baseUrl: string, providerSymbol: string): URL {
+  const symbolParam = envFirst([
+    "TERTIARY_MARKET_DATA_PROVIDER_SYMBOL_PARAM",
+    "MARKET_DATA_TERTIARY_PROVIDER_SYMBOL_PARAM",
+  ]) ?? "symbol";
+  const normalizedBase = normalizeUrlInput(baseUrl);
+  const configuredUrl = normalizedBase.includes("{symbol}")
+    ? normalizedBase.replace("{symbol}", encodeURIComponent(providerSymbol))
+    : normalizedBase;
+  const url = new URL(configuredUrl);
+  if (!normalizedBase.includes("{symbol}")) url.searchParams.set(symbolParam, providerSymbol);
+  return url;
+}
+
+function buildTertiaryProviderAuthHeaders(apiKey: string): Record<string, string> {
+  const headerName = envFirst([
+    "TERTIARY_MARKET_DATA_PROVIDER_AUTH_HEADER",
+    "MARKET_DATA_TERTIARY_PROVIDER_AUTH_HEADER",
+  ]) ?? "Authorization";
+  const configuredPrefix = envFirst([
+    "TERTIARY_MARKET_DATA_PROVIDER_AUTH_PREFIX",
+    "MARKET_DATA_TERTIARY_PROVIDER_AUTH_PREFIX",
+  ]);
+  const defaultPrefix = headerName.toLowerCase() === "authorization" ? "Bearer" : "";
+  const authPrefix = configuredPrefix ?? defaultPrefix;
+  return {
+    [headerName]: authPrefix ? `${authPrefix} ${apiKey}` : apiKey,
+  };
+}
+
 function normalizeUrlInput(value: string): string {
   return /^https?:\/\//i.test(value) ? value : `https://${value}`;
 }
@@ -1987,6 +2326,24 @@ function secondaryProviderPayloadFallbackReason(payload: unknown): string {
     return "secondary_provider_error_response";
   }
   return "none";
+}
+
+function tertiaryProviderPayloadFallbackReason(payload: unknown): string {
+  if (!isRecord(payload)) return "tertiary_provider_no_valid_quote";
+  const status = nullableString(payload.status)?.toLowerCase();
+  const code = payload.code === undefined || payload.code === null ? null : String(payload.code).trim().toLowerCase();
+  const message = nullableString(payload.message)?.toLowerCase();
+  if (status === "error" && (code === "429" || message?.includes("rate"))) return "tertiary_provider_rate_limited";
+  if (status === "error") return "tertiary_provider_error_response";
+  if (payload.code !== undefined && payload.message !== undefined && payload.close === undefined && payload.price === undefined) {
+    if (code === "429" || message?.includes("rate")) return "tertiary_provider_rate_limited";
+    return "tertiary_provider_error_response";
+  }
+  return "none";
+}
+
+function tertiaryHttpFallbackReason(statusCode: number): string {
+  return statusCode === 429 ? "tertiary_provider_rate_limited" : `tertiary_provider_http_${statusCode}`;
 }
 
 function normalizeSecondaryProviderQuotePayload(symbol: SymbolRow, payload: unknown): ProviderQuoteResponse | null {
@@ -2036,6 +2393,42 @@ function secondaryProviderSymbolCandidates(symbolCode: string): string[] {
     candidates.push(`${normalized}${configuredSuffix.toUpperCase()}`);
   }
   return [...new Set(candidates)];
+}
+
+function tertiaryProviderSymbolCandidates(symbolCode: string): string[] {
+  const normalized = symbolCode.trim().toUpperCase();
+  const candidates: string[] = [];
+  pushSafeProviderSymbol(candidates, normalized);
+
+  const configuredSuffix = envFirst([
+    "TERTIARY_MARKET_DATA_PROVIDER_SYMBOL_SUFFIX",
+    "MARKET_DATA_TERTIARY_PROVIDER_SYMBOL_SUFFIX",
+  ]);
+  if (configuredSuffix && /^[A-Z0-9]{2,8}$/.test(normalized) && !normalized.endsWith(configuredSuffix.toUpperCase())) {
+    pushSafeProviderSymbol(candidates, `${normalized}${configuredSuffix.toUpperCase()}`);
+  }
+
+  for (const symbol of tertiaryProviderMappedSymbols(normalized)) {
+    pushSafeProviderSymbol(candidates, symbol);
+  }
+
+  return candidates.slice(0, tertiaryProviderMaxSymbolAttempts());
+}
+
+function tertiaryProviderMappedSymbols(symbolCode: string): string[] {
+  return mappedProviderSymbols(symbolCode, [
+    "TERTIARY_MARKET_DATA_PROVIDER_SYMBOL_MAP",
+    "MARKET_DATA_TERTIARY_PROVIDER_SYMBOL_MAP",
+  ]);
+}
+
+function tertiaryProviderMaxSymbolAttempts(): number {
+  const configured = Number(envFirst([
+    "TERTIARY_MARKET_DATA_PROVIDER_MAX_SYMBOL_ATTEMPTS",
+    "MARKET_DATA_TERTIARY_PROVIDER_MAX_SYMBOL_ATTEMPTS",
+  ]) ?? 3);
+  if (!Number.isFinite(configured)) return 3;
+  return Math.max(1, Math.min(4, Math.round(configured)));
 }
 
 function twelveDataSymbolCandidates(symbolCode: string): string[] {
@@ -2110,6 +2503,12 @@ function shouldStopSecondaryProviderCandidateAttempts(reason: string | undefined
     reason === "secondary_provider_request_failed" ||
     reason === "secondary_provider_http_429" ||
     reason === "secondary_provider_rate_limited";
+}
+
+function shouldStopTertiaryProviderCandidateAttempts(reason: string | undefined): boolean {
+  return reason === "tertiary_provider_timeout" ||
+    reason === "tertiary_provider_request_failed" ||
+    reason === "tertiary_provider_rate_limited";
 }
 
 async function fetchLiveMarketContext(
@@ -2317,6 +2716,12 @@ function secondaryAttemptedSymbolsFromDiagnostics(diagnostics: ProviderDiagnosti
   return latest?.attempted_provider_symbols ?? [];
 }
 
+function tertiaryAttemptedSymbolsFromDiagnostics(diagnostics: ProviderDiagnostics): string[] {
+  const items = diagnostics.symbol_diagnostics ?? [];
+  const latest = items.length > 0 ? items[items.length - 1] : undefined;
+  return latest?.attempted_provider_symbols ?? [];
+}
+
 function replacePriceSnapshot(rows: NormalizedPriceSnapshot[], row: NormalizedPriceSnapshot): void {
   const index = rows.findIndex((item) => item.symbol_code === row.symbol_code);
   if (index >= 0) rows[index] = row;
@@ -2385,6 +2790,10 @@ function isSecondaryProviderReason(reason: string | undefined): boolean {
   return Boolean(reason?.startsWith("secondary_provider_"));
 }
 
+function isTertiaryProviderReason(reason: string | undefined): boolean {
+  return Boolean(reason?.startsWith("tertiary_provider_"));
+}
+
 function alphaVantageAggregateFallbackReason(
   latestReason: string,
   stopReason: string | undefined,
@@ -2393,6 +2802,7 @@ function alphaVantageAggregateFallbackReason(
 ): string {
   if (stopReason) return stopReason;
   if (isSecondaryProviderReason(latestReason)) return latestReason;
+  if (isTertiaryProviderReason(latestReason)) return latestReason;
   if (isAlphaVantageProviderMessage(latestReason)) return latestReason;
   if (hasFallbackSymbols) return "alpha_vantage_payload_missing_or_incomplete_symbols";
   if (marketContextFallback) return "market_context_fallback";
