@@ -136,7 +136,12 @@ class _MarketContextScreenState extends State<MarketContextScreen> {
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    StatusBadge(label: response.meta.dataQuality),
+                    if (response.meta.isDelayedLive || market.isDelayed)
+                      const StatusBadge(label: 'Delayed Live Data')
+                    else
+                      StatusBadge(label: response.meta.dataQuality),
+                    if (response.meta.isLiveMode)
+                      const StatusBadge(label: 'Live provider'),
                     StatusBadge(label: response.meta.providerName),
                     if (market.isStale) const StatusBadge(label: 'stale'),
                     if (market.isSample)
