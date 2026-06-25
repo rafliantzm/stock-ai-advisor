@@ -69,6 +69,35 @@ Optional provider fallback settings:
 - If secondary provider env is complete, the generic JSON quote adapter tries it after Alpha Vantage fallback/provider-message cases.
 - If secondary provider env is missing, the system safely continues to stale/sample fallback.
 
+Twelve Data secondary provider setup:
+
+```text
+SECONDARY_MARKET_DATA_PROVIDER=twelve_data
+SECONDARY_MARKET_DATA_PROVIDER_BASE_URL=https://api.twelvedata.com
+SECONDARY_MARKET_DATA_PROVIDER_API_KEY=<set only in Supabase Edge Function secrets>
+SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_SUFFIX=.JK
+SECONDARY_MARKET_DATA_PROVIDER_EXCHANGE=IDX
+SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_MAP={"BBRI":"BBRI:IDX","TLKM":"TLKM:IDX","UNVR":"UNVR:IDX"}
+```
+
+Twelve Data requests are built inside Edge Functions as a safe quote call:
+
+- host/base from `SECONDARY_MARKET_DATA_PROVIDER_BASE_URL`
+- endpoint path `/quote`
+- `symbol` query parameter
+- `apikey` query parameter
+
+The full URL with `apikey` must never be logged, pasted into docs, or returned to Flutter.
+
+Twelve Data IDX symbol candidate order is intentionally small to reduce provider request noise:
+
+1. Raw internal symbol, for example `BBRI`.
+2. Suffix form from `SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_SUFFIX`, for example `BBRI.JK`.
+3. Exchange form from `SECONDARY_MARKET_DATA_PROVIDER_EXCHANGE`, for example `BBRI:IDX`.
+4. Optional configured alias from `SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_MAP`.
+
+The alias map is safe to store as a Supabase secret because it contains only provider symbol aliases, not credentials. Do not place API keys or URLs with query strings inside the map.
+
 Actual:
 
 ```text
@@ -147,6 +176,7 @@ Expected fallback result:
   - `secondary_provider_name`
   - `secondary_provider_host`
   - `secondary_provider_status_code`
+  - `secondary_provider_content_type`
   - `secondary_provider_response_keys`
   - `secondary_provider_fallback_reason`
   - `fallback_reason`
@@ -159,7 +189,7 @@ Safe symbol diagnostics may include:
 - `selected_provider_symbol`
 - `fallback_reason`
 
-Symbol candidate order:
+Primary Alpha Vantage symbol candidate order:
 
 1. Original internal symbol, for example `BBCA`.
 2. IDX suffix variant, for example `BBCA.JK`.
@@ -168,7 +198,7 @@ Symbol candidate order:
 Provider priority strategy:
 
 1. Primary provider: `alpha_vantage`.
-2. Secondary provider generic JSON adapter, using configured secondary/fallback provider env when available.
+2. Twelve Data or secondary provider adapter, using configured secondary/fallback provider env when available.
 3. Stale/sample fallback.
 
 Expected secondary provider diagnostics:
@@ -196,7 +226,22 @@ Generic secondary quote mapping supports common JSON keys:
 - price: `price`, `last`, `last_price`, `close`, `close_price`
 - OHLC: `open`, `high`, `low`, `close`
 - volume: `volume`, `vol`
-- time: `timestamp`, `date`, `time`, `observed_at`
+- time: `timestamp`, `datetime`, `date`, `time`, `observed_at`
+
+Twelve Data quote mapping additionally supports:
+
+- `close` as the main price when `price` is not present
+- `previous_close`
+- `datetime`
+- string numeric values for OHLCV fields
+
+Twelve Data troubleshooting:
+
+- Non-JSON responses are classified as `secondary_provider_invalid_json`.
+- Error JSON responses are classified as `secondary_provider_error_response`.
+- Provider HTTP 404 responses are classified as `secondary_provider_http_404`; the function then tries the next safe symbol candidate when available.
+- Diagnostics may include status code, content type, safe top-level keys, and provider host only.
+- Do not store or paste raw response bodies when they include provider details.
 
 Safe provider attempt metadata may include provider name, provider role, configured status, selected/skipped/fallback status, data quality, and failover reason. It must not include provider URL path, query string, secret, API key, JWT, or raw provider response.
 

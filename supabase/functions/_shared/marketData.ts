@@ -63,6 +63,7 @@ export type ProviderDiagnostics = {
   secondary_provider_name?: string;
   secondary_provider_host?: string | null;
   secondary_provider_status_code?: number;
+  secondary_provider_content_type?: string | null;
   secondary_provider_response_keys?: string[];
   secondary_provider_fallback_reason?: string;
   fallback_reason: string;
@@ -472,12 +473,14 @@ function secondaryProviderDiagnostics(
   fallbackReason: string,
   statusCode?: number,
   responseKeys?: string[],
+  contentType?: string | null,
 ): Pick<
   ProviderDiagnostics,
   | "secondary_provider_configured"
   | "secondary_provider_name"
   | "secondary_provider_host"
   | "secondary_provider_status_code"
+  | "secondary_provider_content_type"
   | "secondary_provider_response_keys"
   | "secondary_provider_fallback_reason"
 > {
@@ -486,6 +489,7 @@ function secondaryProviderDiagnostics(
     secondary_provider_name: marketSecondaryProviderName(),
     secondary_provider_host: safeProviderHost(secondaryProviderBaseUrl()),
     secondary_provider_status_code: statusCode,
+    secondary_provider_content_type: contentType,
     secondary_provider_response_keys: responseKeys,
     secondary_provider_fallback_reason: fallbackReason,
   };
@@ -1778,16 +1782,27 @@ async function fetchSecondaryProviderQuote(symbol: SymbolRow): Promise<Secondary
   let latestDiagnostics: ProviderDiagnostics | undefined;
   for (const providerSymbol of candidates) {
     attemptedProviderSymbols.push(providerSymbol);
-    const result = await secondaryProviderQuery(providerSymbol);
-    latestDiagnostics = result.diagnostics;
-    const quote = normalizeSecondaryProviderQuotePayload(symbol, result.payload);
-    if (quote) {
-      return {
-        quote,
-        providerSymbol,
-        attemptedProviderSymbols,
-        diagnostics: result.diagnostics,
+    try {
+      const result = await secondaryProviderQuery(providerSymbol);
+      latestDiagnostics = result.diagnostics;
+      const quote = normalizeSecondaryProviderQuotePayload(symbol, result.payload);
+      if (quote) {
+        return {
+          quote,
+          providerSymbol,
+          attemptedProviderSymbols,
+          diagnostics: result.diagnostics,
+        };
+      }
+      latestDiagnostics = {
+        ...result.diagnostics,
+        fallback_reason: "secondary_provider_no_valid_quote",
       };
+    } catch (error) {
+      latestDiagnostics = diagnosticsFromError(error, resolveProviderRuntime(), 1, "secondary_provider_fetch_failed");
+      if (shouldStopSecondaryProviderCandidateAttempts(latestDiagnostics.fallback_reason)) {
+        break;
+      }
     }
   }
 
@@ -1803,6 +1818,7 @@ async function fetchSecondaryProviderQuote(symbol: SymbolRow): Promise<Secondary
       latestDiagnostics?.secondary_provider_fallback_reason ?? "secondary_provider_no_valid_quote",
       latestDiagnostics?.secondary_provider_status_code,
       latestDiagnostics?.secondary_provider_response_keys,
+      latestDiagnostics?.secondary_provider_content_type,
     ),
     fallback_reason: latestDiagnostics?.fallback_reason && latestDiagnostics.fallback_reason !== "none"
       ? latestDiagnostics.fallback_reason
@@ -1835,27 +1851,11 @@ async function secondaryProviderQuery(providerSymbol: string): Promise<ProviderJ
     });
   }
 
-  const symbolParam = envFirst([
-    "SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_PARAM",
-    "MARKET_DATA_SECONDARY_PROVIDER_SYMBOL_PARAM",
-  ]) ?? "symbol";
-  const configuredUrl = baseUrl.includes("{symbol}")
-    ? baseUrl.replace("{symbol}", encodeURIComponent(providerSymbol))
-    : baseUrl;
-  const url = new URL(configuredUrl);
-  if (!baseUrl.includes("{symbol}")) url.searchParams.set(symbolParam, providerSymbol);
-
-  const headerName = envFirst([
-    "SECONDARY_MARKET_DATA_PROVIDER_AUTH_HEADER",
-    "MARKET_DATA_SECONDARY_PROVIDER_AUTH_HEADER",
-  ]) ?? "Authorization";
-  const configuredPrefix = envFirst([
-    "SECONDARY_MARKET_DATA_PROVIDER_AUTH_PREFIX",
-    "MARKET_DATA_SECONDARY_PROVIDER_AUTH_PREFIX",
-  ]);
-  const defaultPrefix = headerName.toLowerCase() === "authorization" ? "Bearer" : "";
-  const authPrefix = configuredPrefix ?? defaultPrefix;
-  const authValue = authPrefix ? `${authPrefix} ${apiKey}` : apiKey;
+  const isTwelveData = marketSecondaryProviderName().trim().toLowerCase() === "twelve_data";
+  const url = isTwelveData
+    ? buildTwelveDataQuoteUrl(baseUrl, providerSymbol, apiKey)
+    : buildGenericSecondaryQuoteUrl(baseUrl, providerSymbol);
+  const authHeaders = isTwelveData ? {} : buildGenericSecondaryAuthHeaders(apiKey);
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
@@ -1864,10 +1864,11 @@ async function secondaryProviderQuery(providerSymbol: string): Promise<ProviderJ
       method: "GET",
       headers: {
         "Accept": "application/json",
-        [headerName]: authValue,
+        ...authHeaders,
       },
       signal: controller.signal,
     });
+    const contentType = response.headers.get("content-type");
     const text = await response.text();
     let payload: unknown;
     try {
@@ -1875,31 +1876,36 @@ async function secondaryProviderQuery(providerSymbol: string): Promise<ProviderJ
     } catch {
       throw new ProviderFetchError("Secondary provider returned invalid JSON", {
         ...diagnostics,
-        ...secondaryProviderDiagnostics("secondary_provider_invalid_json", response.status),
+        ...secondaryProviderDiagnostics("secondary_provider_invalid_json", response.status, undefined, contentType),
         provider_http_status: response.status,
         provider_status_code: response.status,
-        provider_content_type: response.headers.get("content-type"),
+        provider_content_type: contentType,
         fallback_reason: "secondary_provider_invalid_json",
       });
     }
 
     const responseKeys = topLevelJsonKeys(payload);
+    const providerPayloadError = secondaryProviderPayloadFallbackReason(payload);
     const responseDiagnostics: ProviderDiagnostics = {
       ...diagnostics,
       ...secondaryProviderDiagnostics(
-        response.ok ? "none" : `secondary_provider_http_${response.status}`,
+        response.ok ? providerPayloadError : `secondary_provider_http_${response.status}`,
         response.status,
         responseKeys,
+        contentType,
       ),
       provider_http_status: response.status,
       provider_status_code: response.status,
-      provider_content_type: response.headers.get("content-type"),
+      provider_content_type: contentType,
       json_top_level_keys: responseKeys,
       provider_response_keys: responseKeys,
-      fallback_reason: response.ok ? "none" : `secondary_provider_http_${response.status}`,
+      fallback_reason: response.ok ? providerPayloadError : `secondary_provider_http_${response.status}`,
     };
     if (!response.ok) {
       throw new ProviderFetchError(`Secondary provider returned HTTP ${response.status}`, responseDiagnostics);
+    }
+    if (providerPayloadError !== "none") {
+      throw new ProviderFetchError("Secondary provider returned error payload", responseDiagnostics);
     }
 
     return {
@@ -1921,6 +1927,64 @@ async function secondaryProviderQuery(providerSymbol: string): Promise<ProviderJ
   }
 }
 
+function buildTwelveDataQuoteUrl(baseUrl: string, providerSymbol: string, apiKey: string): URL {
+  const normalizedBase = normalizeUrlInput(baseUrl);
+  const url = new URL(normalizedBase);
+  if (url.pathname === "/" || url.pathname === "") {
+    url.pathname = envFirst([
+      "SECONDARY_MARKET_DATA_PROVIDER_QUOTE_PATH",
+      "MARKET_DATA_SECONDARY_PROVIDER_QUOTE_PATH",
+    ]) ?? "/quote";
+  }
+  url.searchParams.set("symbol", providerSymbol);
+  url.searchParams.set("apikey", apiKey);
+  return url;
+}
+
+function buildGenericSecondaryQuoteUrl(baseUrl: string, providerSymbol: string): URL {
+  const symbolParam = envFirst([
+    "SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_PARAM",
+    "MARKET_DATA_SECONDARY_PROVIDER_SYMBOL_PARAM",
+  ]) ?? "symbol";
+  const normalizedBase = normalizeUrlInput(baseUrl);
+  const configuredUrl = normalizedBase.includes("{symbol}")
+    ? normalizedBase.replace("{symbol}", encodeURIComponent(providerSymbol))
+    : normalizedBase;
+  const url = new URL(configuredUrl);
+  if (!normalizedBase.includes("{symbol}")) url.searchParams.set(symbolParam, providerSymbol);
+  return url;
+}
+
+function buildGenericSecondaryAuthHeaders(apiKey: string): Record<string, string> {
+  const headerName = envFirst([
+    "SECONDARY_MARKET_DATA_PROVIDER_AUTH_HEADER",
+    "MARKET_DATA_SECONDARY_PROVIDER_AUTH_HEADER",
+  ]) ?? "Authorization";
+  const configuredPrefix = envFirst([
+    "SECONDARY_MARKET_DATA_PROVIDER_AUTH_PREFIX",
+    "MARKET_DATA_SECONDARY_PROVIDER_AUTH_PREFIX",
+  ]);
+  const defaultPrefix = headerName.toLowerCase() === "authorization" ? "Bearer" : "";
+  const authPrefix = configuredPrefix ?? defaultPrefix;
+  return {
+    [headerName]: authPrefix ? `${authPrefix} ${apiKey}` : apiKey,
+  };
+}
+
+function normalizeUrlInput(value: string): string {
+  return /^https?:\/\//i.test(value) ? value : `https://${value}`;
+}
+
+function secondaryProviderPayloadFallbackReason(payload: unknown): string {
+  if (!isRecord(payload)) return "secondary_provider_no_valid_quote";
+  const status = nullableString(payload.status)?.toLowerCase();
+  if (status === "error") return "secondary_provider_error_response";
+  if (payload.code !== undefined && payload.message !== undefined && payload.close === undefined && payload.price === undefined) {
+    return "secondary_provider_error_response";
+  }
+  return "none";
+}
+
 function normalizeSecondaryProviderQuotePayload(symbol: SymbolRow, payload: unknown): ProviderQuoteResponse | null {
   const record = extractRecordPayload(payload, ["quote", "quotes", "data", "item", "result", "payload"]);
   if (!isRecord(record)) return null;
@@ -1937,7 +2001,7 @@ function normalizeSecondaryProviderQuotePayload(symbol: SymbolRow, payload: unkn
     symbol_code: symbol.symbol_code,
     symbol: providerSymbol ?? symbol.symbol_code,
     provider_symbol: providerSymbol ?? symbol.symbol_code,
-    source_time: record.timestamp ?? record.date ?? record.time ?? record.observed_at,
+    source_time: record.timestamp ?? record.datetime ?? record.date ?? record.time ?? record.observed_at,
     price: lastPrice,
     close: record.close ?? record.close_price ?? lastPrice,
     open: record.open ?? record.open_price,
@@ -1955,6 +2019,10 @@ function normalizeSecondaryProviderQuotePayload(symbol: SymbolRow, payload: unkn
 
 function secondaryProviderSymbolCandidates(symbolCode: string): string[] {
   const normalized = symbolCode.trim().toUpperCase();
+  if (marketSecondaryProviderName().trim().toLowerCase() === "twelve_data") {
+    return twelveDataSymbolCandidates(normalized);
+  }
+
   const candidates = [normalized];
   const configuredSuffix = envFirst([
     "SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_SUFFIX",
@@ -1964,6 +2032,61 @@ function secondaryProviderSymbolCandidates(symbolCode: string): string[] {
     candidates.push(`${normalized}${configuredSuffix.toUpperCase()}`);
   }
   return [...new Set(candidates)];
+}
+
+function twelveDataSymbolCandidates(symbolCode: string): string[] {
+  const normalized = symbolCode.trim().toUpperCase();
+  const candidates: string[] = [];
+  pushSafeProviderSymbol(candidates, normalized);
+
+  const configuredSuffix = envFirst([
+    "SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_SUFFIX",
+    "MARKET_DATA_SECONDARY_PROVIDER_SYMBOL_SUFFIX",
+    "TWELVE_DATA_SYMBOL_SUFFIX",
+  ]) ?? ".JK";
+  const suffix = configuredSuffix.trim().toUpperCase();
+  if (suffix && /^[A-Z0-9]{2,8}$/.test(normalized) && !normalized.endsWith(suffix)) {
+    pushSafeProviderSymbol(candidates, `${normalized}${suffix}`);
+  }
+
+  const configuredExchange = envFirst([
+    "SECONDARY_MARKET_DATA_PROVIDER_EXCHANGE",
+    "MARKET_DATA_SECONDARY_PROVIDER_EXCHANGE",
+    "TWELVE_DATA_EXCHANGE",
+  ]) ?? "IDX";
+  const exchange = configuredExchange.trim().toUpperCase();
+  if (exchange && /^[A-Z0-9]{2,8}$/.test(normalized) && !normalized.includes(":")) {
+    pushSafeProviderSymbol(candidates, `${normalized}:${exchange}`);
+  }
+
+  pushSafeProviderSymbol(candidates, twelveDataMappedSymbol(normalized));
+  return candidates.slice(0, secondaryProviderMaxSymbolAttempts());
+}
+
+function twelveDataMappedSymbol(symbolCode: string): string | null {
+  return mappedProviderSymbol(symbolCode, [
+    "SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_MAP",
+    "MARKET_DATA_SECONDARY_PROVIDER_SYMBOL_MAP",
+    "TWELVE_DATA_SYMBOL_MAP",
+  ]);
+}
+
+function secondaryProviderMaxSymbolAttempts(): number {
+  const configured = Number(envFirst([
+    "SECONDARY_MARKET_DATA_PROVIDER_MAX_SYMBOL_ATTEMPTS",
+    "MARKET_DATA_SECONDARY_PROVIDER_MAX_SYMBOL_ATTEMPTS",
+  ]) ?? 4);
+  if (!Number.isFinite(configured)) return 4;
+  return Math.max(1, Math.min(5, Math.round(configured)));
+}
+
+function pushSafeProviderSymbol(candidates: string[], value: unknown): void {
+  const symbol = safeProviderSymbol(value);
+  if (symbol && !candidates.includes(symbol)) candidates.push(symbol);
+}
+
+function shouldStopSecondaryProviderCandidateAttempts(reason: string | undefined): boolean {
+  return reason === "secondary_provider_timeout" || reason === "secondary_provider_request_failed";
 }
 
 async function fetchLiveMarketContext(
@@ -2109,7 +2232,11 @@ function alphaVantageSymbolCandidates(symbolCode: string): string[] {
 }
 
 function alphaVantageMappedSymbol(symbolCode: string): string | null {
-  const rawMap = envFirst(["MARKET_DATA_ALPHA_VANTAGE_SYMBOL_MAP", "MARKET_DATA_PROVIDER_SYMBOL_MAP"]);
+  return mappedProviderSymbol(symbolCode, ["MARKET_DATA_ALPHA_VANTAGE_SYMBOL_MAP", "MARKET_DATA_PROVIDER_SYMBOL_MAP"]);
+}
+
+function mappedProviderSymbol(symbolCode: string, envNames: string[]): string | null {
+  const rawMap = envFirst(envNames);
   if (!rawMap) return null;
 
   try {
