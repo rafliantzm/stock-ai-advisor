@@ -55,6 +55,19 @@ export type ProviderDiagnostics = {
   json_top_level_keys?: string[];
   provider_response_keys?: string[];
   symbol_diagnostics?: ProviderSymbolDiagnostics[];
+  provider_attempts?: ProviderAttemptDiagnostics[];
+  selected_provider?: string;
+  fallback_provider_used?: boolean;
+  provider_failover_reason?: string;
+  fallback_reason: string;
+};
+
+export type ProviderAttemptDiagnostics = {
+  provider_name: string;
+  provider_role: "primary" | "fallback" | "sample";
+  provider_configured: boolean;
+  provider_status: "attempted" | "skipped" | "selected" | "fallback";
+  data_quality: MarketDataQuality;
   fallback_reason: string;
 };
 
@@ -392,6 +405,78 @@ function diagnosticsFromError(
 ): ProviderDiagnostics {
   if (error instanceof ProviderFetchError) return error.diagnostics;
   return buildProviderDiagnostics(runtime, requestedSymbolCount, fallbackReason);
+}
+
+function marketFallbackProviderName(): string | null {
+  return envFirst(["MARKET_DATA_FALLBACK_PROVIDER", "MARKET_DATA_FALLBACK_PROVIDER_NAME"]);
+}
+
+function hasFallbackProviderConfig(): boolean {
+  return Boolean(
+    marketFallbackProviderName() &&
+      envFirst(["MARKET_DATA_FALLBACK_PROVIDER_BASE_URL", "MARKET_DATA_FALLBACK_API_BASE_URL"]) &&
+      envFirst(["MARKET_DATA_FALLBACK_PROVIDER_API_KEY", "MARKET_DATA_FALLBACK_API_KEY"]),
+  );
+}
+
+function providerFallbackAttempts(
+  runtime: ProviderRuntime,
+  selectedProvider: string,
+  fallbackProviderUsed: boolean,
+  failoverReason: string,
+  dataQuality: MarketDataQuality,
+): ProviderAttemptDiagnostics[] {
+  const attempts: ProviderAttemptDiagnostics[] = [{
+    provider_name: runtime.activeProviderName,
+    provider_role: "primary",
+    provider_configured: runtime.isLiveConfigured,
+    provider_status: selectedProvider === runtime.activeProviderName ? "selected" : "attempted",
+    data_quality: selectedProvider === runtime.activeProviderName ? dataQuality : "stale",
+    fallback_reason: failoverReason,
+  }];
+
+  const fallbackName = marketFallbackProviderName();
+  if (fallbackName) {
+    attempts.push({
+      provider_name: fallbackName,
+      provider_role: "fallback",
+      provider_configured: hasFallbackProviderConfig(),
+      provider_status: fallbackProviderUsed ? "attempted" : "skipped",
+      data_quality: "stale",
+      fallback_reason: hasFallbackProviderConfig()
+        ? "fallback_provider_adapter_not_enabled"
+        : "fallback_provider_env_incomplete",
+    });
+  }
+
+  attempts.push({
+    provider_name: DEFAULT_PROVIDER_NAME,
+    provider_role: "sample",
+    provider_configured: true,
+    provider_status: fallbackProviderUsed ? "fallback" : "skipped",
+    data_quality: fallbackProviderUsed ? "stale" : dataQuality,
+    fallback_reason: fallbackProviderUsed ? failoverReason : "not_needed",
+  });
+
+  return attempts;
+}
+
+function withProviderFallbackDiagnostics(
+  diagnostics: ProviderDiagnostics | undefined,
+  runtime: ProviderRuntime,
+  dataQuality: MarketDataQuality,
+  fallbackProviderUsed: boolean,
+  failoverReason: string,
+): ProviderDiagnostics | undefined {
+  if (!diagnostics) return undefined;
+  const selectedProvider = fallbackProviderUsed ? DEFAULT_PROVIDER_NAME : runtime.activeProviderName;
+  return {
+    ...diagnostics,
+    provider_attempts: providerFallbackAttempts(runtime, selectedProvider, fallbackProviderUsed, failoverReason, dataQuality),
+    selected_provider: selectedProvider,
+    fallback_provider_used: fallbackProviderUsed,
+    provider_failover_reason: failoverReason,
+  };
 }
 
 function safeProviderHost(baseUrl: string | null): string | null {
@@ -795,6 +880,15 @@ function buildFallbackCandidateRows(
   diagnostics?: ProviderDiagnostics,
 ): MarketCandidateRows {
   const fallbackQuality: MarketDataQuality = providerMode === "provider_error" ? "stale" : "sample";
+  const fallbackDiagnostics = diagnostics?.provider_attempts
+    ? diagnostics
+    : withProviderFallbackDiagnostics(
+      diagnostics,
+      runtime,
+      fallbackQuality,
+      providerMode !== "sample",
+      diagnostics?.fallback_reason ?? (providerMode === "sample" ? "not_needed" : "provider_fallback_active"),
+    );
   return {
     priceSnapshots: symbols.map((symbol) =>
       sampleQuote(symbol, observedAt, provider.provider_name, provider.id, fallbackQuality)
@@ -813,7 +907,7 @@ function buildFallbackCandidateRows(
     riskWarning: buildRiskWarning(fallbackQuality, providerStatus, additionalWarnings),
     usedLiveAdapter: false,
     providerMode,
-    diagnostics,
+    diagnostics: fallbackDiagnostics,
   };
 }
 
@@ -844,6 +938,13 @@ export async function buildMarketContextRow(
       console.warn("Market context provider fallback:", diagnostics);
       const marketContext = sampleMarketContext(fallbackProvider.provider_name, fallbackProvider.id, observedAt, "stale");
       const providerStatus = "provider live error - fallback sample aktif";
+      const fallbackDiagnostics = withProviderFallbackDiagnostics(
+        diagnostics,
+        runtime,
+        "stale",
+        true,
+        diagnostics.fallback_reason,
+      );
       return {
         marketContext,
         dataQuality: "stale",
@@ -854,7 +955,7 @@ export async function buildMarketContextRow(
         }]),
         usedLiveAdapter: false,
         providerMode: "provider_error",
-        diagnostics,
+        diagnostics: fallbackDiagnostics,
       };
     }
   }
@@ -872,7 +973,15 @@ export async function buildMarketContextRow(
     riskWarning: buildRiskWarning(fallbackQuality, providerStatus, runtime.riskWarning),
     usedLiveAdapter: false,
     providerMode,
-    diagnostics: runtime.mode === "sample" ? undefined : buildProviderDiagnostics(runtime, undefined, "provider_env_incomplete"),
+    diagnostics: runtime.mode === "sample"
+      ? undefined
+      : withProviderFallbackDiagnostics(
+        buildProviderDiagnostics(runtime, undefined, "provider_env_incomplete"),
+        runtime,
+        fallbackQuality,
+        true,
+        "provider_env_incomplete",
+      ),
   };
 }
 
@@ -969,6 +1078,17 @@ async function fetchLiveCandidateRows(
     ...technicalIndicators.map((row) => row.data_quality),
     ...(marketContext ? [marketContext.data_quality] : []),
   ]);
+  const providerFailoverReason = fallbackWarnings.length > 0
+    ? "provider_payload_missing_or_incomplete_symbols"
+    : marketContextFallback
+    ? "market_context_fallback"
+    : hasFallback
+    ? "provider_payload_stale_or_partial"
+    : "none";
+  const fallbackDiagnostics = withProviderFallbackDiagnostics({
+    ...diagnostics,
+    fallback_reason: providerFailoverReason,
+  }, runtime, dataQuality, hasFallback, providerFailoverReason);
 
   return {
     priceSnapshots,
@@ -984,16 +1104,7 @@ async function fetchLiveCandidateRows(
     riskWarning: buildRiskWarning(dataQuality, runtime.providerStatus, fallbackWarnings),
     usedLiveAdapter: true,
     providerMode: hasFallback ? "provider_error" : "live",
-    diagnostics: hasFallback
-      ? {
-        ...diagnostics,
-        fallback_reason: fallbackWarnings.length > 0
-          ? "provider_payload_missing_or_incomplete_symbols"
-          : marketContextFallback
-          ? "market_context_fallback"
-          : "provider_payload_stale_or_partial",
-      }
-      : undefined,
+    diagnostics: hasFallback ? fallbackDiagnostics : undefined,
   };
 }
 
@@ -1269,6 +1380,23 @@ async function fetchAlphaVantageCandidateRows(
     ...technicalIndicators.map((row) => row.data_quality),
     ...(marketContext ? [marketContext.data_quality] : []),
   ]);
+  const providerFailoverReason = latestDiagnostics
+    ? alphaVantageAggregateFallbackReason(
+      latestDiagnostics.fallback_reason,
+      providerStopState?.reason,
+      fallbackWarnings.length > 0,
+      marketContextFallback,
+    )
+    : hasFallback
+    ? "alpha_vantage_payload_stale_or_partial"
+    : "none";
+  const diagnostics = hasFallback && latestDiagnostics
+    ? withProviderFallbackDiagnostics({
+      ...latestDiagnostics,
+      symbol_diagnostics: symbolDiagnostics,
+      fallback_reason: providerFailoverReason,
+    }, runtime, dataQuality, true, providerFailoverReason)
+    : withProviderFallbackDiagnostics(latestDiagnostics, runtime, dataQuality, false, providerFailoverReason);
 
   return {
     priceSnapshots,
@@ -1284,18 +1412,7 @@ async function fetchAlphaVantageCandidateRows(
     riskWarning: buildRiskWarning(dataQuality, runtime.providerStatus, fallbackWarnings),
     usedLiveAdapter: true,
     providerMode: hasFallback ? "provider_error" : "live",
-    diagnostics: hasFallback && latestDiagnostics
-      ? {
-        ...latestDiagnostics,
-        symbol_diagnostics: symbolDiagnostics,
-        fallback_reason: alphaVantageAggregateFallbackReason(
-          latestDiagnostics.fallback_reason,
-          providerStopState?.reason,
-          fallbackWarnings.length > 0,
-          marketContextFallback,
-        ),
-      }
-      : undefined,
+    diagnostics,
   };
 }
 
