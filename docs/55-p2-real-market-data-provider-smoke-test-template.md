@@ -52,10 +52,15 @@ Optional Alpha Vantage settings:
 
 Optional provider fallback settings:
 
+- Preferred secondary provider names:
+  - `MARKET_DATA_SECONDARY_PROVIDER` or `MARKET_DATA_SECONDARY_PROVIDER_NAME`
+  - `MARKET_DATA_SECONDARY_PROVIDER_BASE_URL` or `MARKET_DATA_SECONDARY_API_BASE_URL`
+  - `MARKET_DATA_SECONDARY_PROVIDER_API_KEY` or `MARKET_DATA_SECONDARY_API_KEY`
+- Legacy fallback aliases are still accepted:
 - `MARKET_DATA_FALLBACK_PROVIDER` or `MARKET_DATA_FALLBACK_PROVIDER_NAME`
 - `MARKET_DATA_FALLBACK_PROVIDER_BASE_URL` or `MARKET_DATA_FALLBACK_API_BASE_URL`
 - `MARKET_DATA_FALLBACK_PROVIDER_API_KEY` or `MARKET_DATA_FALLBACK_API_KEY`
-- Current fallback provider support is diagnostic-first. If no fallback adapter is enabled, the system safely continues to stale/sample fallback.
+- Current secondary provider support is diagnostic-first. If no secondary adapter is enabled, the system safely continues to stale/sample fallback.
 
 Actual:
 
@@ -131,6 +136,7 @@ Expected fallback result:
   - `selected_provider`
   - `fallback_provider_used`
   - `provider_failover_reason`
+  - `secondary_provider_configured`
   - `fallback_reason`
 - diagnostics must not include API key, Authorization header, JWT, service role key, full URL, or raw provider response
 
@@ -150,8 +156,22 @@ Symbol candidate order:
 Provider priority strategy:
 
 1. Primary provider: `alpha_vantage`.
-2. Configured fallback provider placeholder, when fallback provider env exists.
+2. Secondary provider placeholder, using configured secondary/fallback provider env when available.
 3. Stale/sample fallback.
+
+Expected secondary provider diagnostics:
+
+- When no secondary provider env exists:
+  - `provider_name = secondary_provider`
+  - `provider_role = secondary`
+  - `provider_configured = false`
+  - `provider_status = skipped`
+  - `fallback_reason = secondary_provider_not_configured`
+- When secondary provider env exists but no adapter is enabled yet:
+  - `provider_role = secondary`
+  - `provider_configured = true`
+  - `provider_status = attempted`
+  - `fallback_reason = secondary_provider_adapter_not_enabled`
 
 Safe provider attempt metadata may include provider name, provider role, configured status, selected/skipped/fallback status, data quality, and failover reason. It must not include provider URL path, query string, secret, API key, JWT, or raw provider response.
 
@@ -194,6 +214,7 @@ Rate-limit/provider-message handling:
 - If all configured variants fail for a symbol, mark it as `alpha_vantage_invalid_symbol` or quote-missing provider limitation, not a database failure.
 - Diagnostics include only safe metadata such as `provider_response_keys`, HTTP status, content type, host, and fallback reason.
 - Provider failover diagnostics include `provider_attempts`, `selected_provider`, `fallback_provider_used`, and `provider_failover_reason`.
+- Secondary provider diagnostics include `secondary_provider_configured` and a secondary provider entry inside `provider_attempts`.
 - Raw provider response and credentials must not be pasted into this report.
 
 ## Test 2 - Get Market Context
