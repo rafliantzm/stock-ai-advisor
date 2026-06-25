@@ -43,6 +43,18 @@ void main() {
     expect(find.text('Final Menunggu data'), findsOneWidget);
   });
 
+  test('ui helpers format severity, provider labels, and WIB timestamps', () {
+    expect(riskSeverityBand('low'), 'low');
+    expect(riskSeverityBand('medium'), 'medium');
+    expect(riskSeverityBand('high'), 'high');
+    expect(riskSeverityBand('error'), 'high');
+    expect(humanizeUiText('Delayed Live Data'), 'Delayed provider-backed data');
+    expect(
+      formatWibTimestamp('2026-06-25T12:58:00Z'),
+      '25 Jun 2026, 19:58 WIB',
+    );
+  });
+
   test('market context adapter reads P2 response contract', () {
     final response = MarketContextResponse.fromResult(
       {
@@ -255,11 +267,11 @@ void main() {
     );
 
     expect(
-      find.textContaining('Provider P2 sudah aktif sebagai delayed context'),
-      findsOneWidget,
+      find.textContaining('Provider-backed delayed data tersedia'),
+      findsWidgets,
     );
     expect(
-      find.textContaining('Provider-backed OHLCV cache sedang disiapkan'),
+      find.textContaining('OHLCV chart interaktif sedang diintegrasikan'),
       findsOneWidget,
     );
   });
@@ -293,7 +305,7 @@ void main() {
 
     expect(
       find.textContaining(
-        'Market data P2 tersedia sebagai delayed provider context.',
+        'Market data P2 tersedia sebagai provider-backed delayed context.',
       ),
       findsOneWidget,
     );

@@ -24,7 +24,7 @@ class StockDetailScreen extends StatelessWidget {
           AppSectionHeader(
             title: '${analysis.symbolCode} Analysis',
             subtitle:
-                '${analysis.companyName} - ${analysis.sourceLabel}. Market data P2 tersedia sebagai delayed provider context.',
+                '${analysis.companyName} - ${analysis.sourceLabel}. Market data P2 tersedia sebagai provider-backed delayed context.',
             trailing: StatusBadge(label: analysis.candidateLabel),
           ),
           const SizedBox(height: 16),
@@ -67,7 +67,7 @@ class _PriceSnapshot extends StatelessWidget {
     return SectionCard(
       title: 'Price Snapshot',
       subtitle:
-          'P2 delayed provider context - price detail per symbol masih tahap integrasi',
+          'P2 provider-backed delayed context - price detail per symbol masih tahap integrasi',
       child: ResponsiveGrid(
         children: [
           const MetricTile(label: 'market price', value: 'Data belum cukup'),
