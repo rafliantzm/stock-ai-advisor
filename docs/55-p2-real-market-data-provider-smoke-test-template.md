@@ -9,8 +9,8 @@ Use this template after configuring provider secrets in Supabase Edge Functions.
 | Date |  |
 | Supabase project |  |
 | Branch | `p2-real-market-data-provider` |
-| Provider name |  |
-| Provider adapter | `generic_json` |
+| Provider name | `alpha_vantage` or `generic_json` |
+| Provider adapter | `alpha_vantage` or `generic_json` |
 | Function `sync-market-candidates` deployed | yes / no |
 | Function `get-market-context` deployed | yes / no |
 
@@ -30,6 +30,22 @@ Expected secret names:
 - `MARKET_DATA_PROVIDER_API_KEY`
 
 Legacy alias names may also exist, but Flutter must not contain provider secrets.
+
+Alpha Vantage setup example:
+
+```text
+MARKET_DATA_PROVIDER_MODE=live
+MARKET_DATA_PROVIDER=alpha_vantage
+MARKET_DATA_PROVIDER_BASE_URL=https://www.alphavantage.co/query
+MARKET_DATA_PROVIDER_API_KEY=<set only in Supabase Edge Function secrets>
+```
+
+Optional Alpha Vantage settings:
+
+- `MARKET_DATA_ALPHA_VANTAGE_SYMBOL_SUFFIX=.JK` for IDX suffix retry.
+- `MARKET_DATA_ALPHA_VANTAGE_INDEX_SYMBOL=IHSG` or a provider-supported index symbol.
+- `MARKET_DATA_ALPHA_VANTAGE_FETCH_DAILY=true` to request latest daily OHLCV bars.
+- `MARKET_DATA_ALPHA_VANTAGE_STALE_DAYS=7` to control delayed daily data staleness.
 
 Actual:
 
@@ -91,34 +107,62 @@ Expected fallback result:
 - `data.data_quality = stale` or `sample`
 - `meta.provider_mode = provider_error` or `fallback_sample`
 - `risk_warning` explains fallback state
+- when `meta.provider_mode = provider_error`, `meta.provider_diagnostics` may include safe diagnostics:
+  - `provider_configured`
+  - `provider_host`
+  - `requested_symbol_count`
+  - `provider_http_status`
+  - `provider_status_code`
+  - `provider_content_type`
+  - `json_top_level_keys`
+  - `provider_response_keys`
+  - `fallback_reason`
+- diagnostics must not include API key, Authorization header, JWT, service role key, full URL, or raw provider response
+
+Alpha Vantage fallback examples:
+
+- `fallback_reason = alpha_vantage_rate_limit` when provider returns a rate-limit note.
+- `fallback_reason = alpha_vantage_unsupported_symbol` when both plain and suffix symbol variants are unsupported.
+- `fallback_reason = alpha_vantage_quote_missing` when `Global Quote` is empty.
+- `fallback_reason = provider_invalid_json` when the response is not valid JSON.
 
 Actual:
 
-Status: PASS
+Status: PARTIAL PASS
 
 Actual Result:
 - sync-market-candidates returned ok true.
-- get-market-context returned ok true.
-- sync-market-candidates provider_mode: provider_error.
-- sync-market-candidates data_quality: stale.
-- sync-market-candidates provider_status: provider live error - fallback sample aktif.
-- get-market-context provider_mode: provider_error.
-- get-market-context data_quality: stale.
-- get-market-context provider_status: provider live belum mengembalikan data valid - fallback cache aktif.
-- fallback_status: active.
-- provider_sync_runs: 7 rows.
-- market_price_snapshots: 35 rows.
-- ohlcv_bars: 0 rows.
-- technical_indicator_snapshots: 35 rows.
-- market_context_snapshots: 7 rows.
-- news_items: 0 rows.
+- provider_name: alpha_vantage.
+- provider_host: www.alphavantage.co.
+- provider_http_status: 200.
+- provider_content_type: application/json.
+- provider_response_keys: Global Quote.
+- provider_mode: provider_error.
+- data_quality: stale.
+- fallback_reason: alpha_vantage_payload_missing_or_incomplete_symbols.
+- rows_inserted: 13.
+- ohlcv_bars_inserted: 2.
+- Alpha Vantage credential is valid and reachable.
+- Some symbols still fall back to stale/sample data because live provider payload is incomplete.
+- get-market-context still returns stale fallback for IHSG.
 - Provider secrets remain handled in Supabase Edge Functions.
 - Flutter does not expose service role key or provider secret.
 
 Conclusion:
-The real market data provider adapter is structurally working, but live production data is not active yet. The system safely falls back to stale/sample data with clear provider_error metadata and risk warnings.
+Alpha Vantage credential activation is partially successful. The provider is reachable and returns valid JSON, but not all IDX symbols are mapped into complete live data yet. The system safely falls back to stale/sample data for incomplete symbols.
 
 ## Test 2 - Get Market Context
+
+get-market-context:
+- returned ok true.
+- provider_name: sample_provider.
+- requested_provider_name: alpha_vantage.
+- provider_mode: provider_error.
+- data_quality: stale.
+- index_last: null.
+- provider_status: provider live belum mengembalikan data valid - fallback cache aktif.
+- disclaimer is present.
+- IHSG context remains fallback/stale because live index data is not available yet.
 
 ```powershell
 $body = @{
@@ -148,7 +192,10 @@ Expected fallback result:
 - `data.market_context.data_quality = stale` or `sample`
 - `data.provider.data_quality` matches `data.market_context.data_quality`
 - `meta.provider_mode = provider_error`, `fallback_sample`, or `sample`
+- when `meta.provider_mode = provider_error`, `meta.provider_diagnostics` may include safe diagnostics only
 - disclaimer remains educational
+
+For Alpha Vantage market context, live data requires the configured index symbol to be supported by the provider. If not supported, fallback stale/sample context is expected and safe.
 
 Actual:
 

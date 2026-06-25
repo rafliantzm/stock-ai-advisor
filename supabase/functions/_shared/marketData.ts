@@ -45,6 +45,18 @@ export type RiskWarning = {
   message: string;
 };
 
+export type ProviderDiagnostics = {
+  provider_configured: boolean;
+  provider_host: string | null;
+  requested_symbol_count?: number;
+  provider_http_status?: number;
+  provider_status_code?: number;
+  provider_content_type?: string | null;
+  json_top_level_keys?: string[];
+  provider_response_keys?: string[];
+  fallback_reason: string;
+};
+
 export type NormalizedPriceSnapshot = {
   symbol_id: string;
   symbol_code: string;
@@ -149,11 +161,14 @@ export type MarketCandidateRows = {
   ohlcvBars: NormalizedOhlcvBar[];
   technicalIndicators: NormalizedTechnicalIndicator[];
   marketContext: NormalizedMarketContext | null;
+  liveSymbols: string[];
+  fallbackSymbols: string[];
   dataQuality: MarketDataQuality;
   providerStatus: string;
   riskWarning: RiskWarning[];
   usedLiveAdapter: boolean;
   providerMode: ProviderMode;
+  diagnostics?: ProviderDiagnostics;
 };
 
 export type MarketContextBuildResult = {
@@ -163,6 +178,12 @@ export type MarketContextBuildResult = {
   riskWarning: RiskWarning[];
   usedLiveAdapter: boolean;
   providerMode: ProviderMode;
+  diagnostics?: ProviderDiagnostics;
+};
+
+type ProviderJsonResult = {
+  payload: unknown;
+  diagnostics: ProviderDiagnostics;
 };
 
 type ProviderQuoteResponse = {
@@ -198,12 +219,28 @@ type ProviderQuoteResponse = {
   is_delayed?: unknown;
 };
 
+type AlphaVantageQuoteResult = {
+  quote: Record<string, unknown>;
+  providerSymbol: string;
+  diagnostics: ProviderDiagnostics;
+};
+
 export const DEFAULT_PROVIDER_NAME = "sample_provider";
 export const DEFAULT_MARKET_CODE = "IDX";
 export const DEFAULT_INDEX_SYMBOL = "IHSG";
 export const SAMPLE_STALENESS_WARNING = "provider belum aktif - sample data";
 export const STALE_PROVIDER_WARNING = "provider live belum menghasilkan data baru - memakai fallback aman";
 const CONTRACT_VERSION = "p2_market_data_live_provider_contract_v1";
+
+class ProviderFetchError extends Error {
+  diagnostics: ProviderDiagnostics;
+
+  constructor(message: string, diagnostics: ProviderDiagnostics) {
+    super(message);
+    this.name = "ProviderFetchError";
+    this.diagnostics = diagnostics;
+  }
+}
 
 export function marketProviderName(): string {
   return envFirst(["MARKET_DATA_PROVIDER", "MARKET_DATA_PROVIDER_NAME"]) || DEFAULT_PROVIDER_NAME;
@@ -282,7 +319,12 @@ function normalizeProviderMode(value: string | undefined | null): "sample" | "li
 }
 
 function liveProviderAdapterName(): string {
-  return Deno.env.get("MARKET_DATA_PROVIDER_ADAPTER")?.trim().toLowerCase() || "generic_json";
+  const configuredAdapter = Deno.env.get("MARKET_DATA_PROVIDER_ADAPTER")?.trim().toLowerCase();
+  if (configuredAdapter) return configuredAdapter;
+
+  const providerName = marketProviderName().trim().toLowerCase();
+  if (providerName === "alpha_vantage" || providerName === "alphavantage") return "alpha_vantage";
+  return "generic_json";
 }
 
 function envFirst(names: string[]): string | null {
@@ -299,6 +341,65 @@ function missingLiveProviderConfigNames(): string[] {
   if (!envFirst(["MARKET_DATA_PROVIDER_BASE_URL", "MARKET_DATA_API_BASE_URL"])) missing.push("base_url");
   if (!envFirst(["MARKET_DATA_PROVIDER_API_KEY", "MARKET_DATA_API_KEY"])) missing.push("api_key");
   return missing;
+}
+
+function buildProviderDiagnostics(
+  runtime: ProviderRuntime,
+  requestedSymbolCount: number | undefined,
+  fallbackReason: string,
+): ProviderDiagnostics {
+  return buildProviderDiagnosticsFromConfig(
+    envFirst(["MARKET_DATA_PROVIDER_BASE_URL", "MARKET_DATA_API_BASE_URL"]),
+    runtime.isLiveConfigured,
+    requestedSymbolCount,
+    fallbackReason,
+  );
+}
+
+function buildProviderDiagnosticsFromConfig(
+  baseUrl: string | null,
+  hasApiKey: boolean,
+  requestedSymbolCount: number | undefined,
+  fallbackReason: string,
+): ProviderDiagnostics {
+  return {
+    provider_configured: Boolean(baseUrl && hasApiKey),
+    provider_host: safeProviderHost(baseUrl),
+    requested_symbol_count: requestedSymbolCount,
+    fallback_reason: fallbackReason,
+  };
+}
+
+function diagnosticsFromError(
+  error: unknown,
+  runtime: ProviderRuntime,
+  requestedSymbolCount: number | undefined,
+  fallbackReason: string,
+): ProviderDiagnostics {
+  if (error instanceof ProviderFetchError) return error.diagnostics;
+  return buildProviderDiagnostics(runtime, requestedSymbolCount, fallbackReason);
+}
+
+function safeProviderHost(baseUrl: string | null): string | null {
+  if (!baseUrl) return null;
+  try {
+    return new URL(baseUrl).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function requestedSymbolCountFromBody(body: Record<string, unknown>): number | undefined {
+  const symbols = body.symbol_codes;
+  return Array.isArray(symbols) ? symbols.length : undefined;
+}
+
+function topLevelJsonKeys(payload: unknown): string[] {
+  if (Array.isArray(payload)) return ["array"];
+  if (!isRecord(payload)) return [];
+  return Object.keys(payload)
+    .filter((key) => !/key|token|secret|authorization|credential|password/i.test(key))
+    .slice(0, 20);
 }
 
 export function providerMeta(runtime: ProviderRuntime) {
@@ -634,7 +735,8 @@ export async function buildMarketCandidateRows(
         return liveRows;
       }
     } catch (error) {
-      console.warn("Market data provider fallback:", error);
+      const diagnostics = diagnosticsFromError(error, runtime, symbols.length, "provider_fetch_failed");
+      console.warn("Market data provider fallback:", diagnostics);
       return buildFallbackCandidateRows(
         symbols,
         fallbackProvider,
@@ -647,6 +749,7 @@ export async function buildMarketCandidateRows(
           level: "high",
           message: "Provider live belum bisa dipakai saat ini; data fallback hanya untuk observasi watchlist candidate.",
         }],
+        diagnostics,
       );
     }
   }
@@ -662,6 +765,7 @@ export async function buildMarketCandidateRows(
       ? runtime.providerStatus
       : "provider live belum lengkap - fallback sample aktif",
     runtime.riskWarning,
+    runtime.mode === "sample" ? undefined : buildProviderDiagnostics(runtime, symbols.length, "provider_env_incomplete"),
   );
 }
 
@@ -674,6 +778,7 @@ function buildFallbackCandidateRows(
   providerMode: ProviderMode,
   providerStatus: string,
   additionalWarnings: RiskWarning[],
+  diagnostics?: ProviderDiagnostics,
 ): MarketCandidateRows {
   const fallbackQuality: MarketDataQuality = providerMode === "provider_error" ? "stale" : "sample";
   return {
@@ -687,11 +792,14 @@ function buildFallbackCandidateRows(
     marketContext: includeMarketContext
       ? sampleMarketContext(provider.provider_name, provider.id, observedAt, fallbackQuality)
       : null,
+    liveSymbols: [],
+    fallbackSymbols: symbols.map((symbol) => symbol.symbol_code),
     dataQuality: fallbackQuality,
     providerStatus,
     riskWarning: buildRiskWarning(fallbackQuality, providerStatus, additionalWarnings),
     usedLiveAdapter: false,
     providerMode,
+    diagnostics,
   };
 }
 
@@ -704,7 +812,9 @@ export async function buildMarketContextRow(
   if (runtime.isLiveConfigured) {
     try {
       assertSupportedLiveAdapter(runtime);
-      const marketContext = await fetchLiveMarketContext(provider, observedAt);
+      const marketContext = runtime.providerAdapter === "alpha_vantage"
+        ? await fetchAlphaVantageMarketContext(provider, observedAt)
+        : await fetchLiveMarketContext(provider, observedAt);
       return {
         marketContext,
         dataQuality: marketContext.data_quality,
@@ -716,7 +826,8 @@ export async function buildMarketContextRow(
         providerMode: isProviderFreshQuality(marketContext.data_quality) ? "live" : "provider_error",
       };
     } catch (error) {
-      console.warn("Market context provider fallback:", error);
+      const diagnostics = diagnosticsFromError(error, runtime, undefined, "market_context_fetch_failed");
+      console.warn("Market context provider fallback:", diagnostics);
       const marketContext = sampleMarketContext(fallbackProvider.provider_name, fallbackProvider.id, observedAt, "stale");
       const providerStatus = "provider live error - fallback sample aktif";
       return {
@@ -729,6 +840,7 @@ export async function buildMarketContextRow(
         }]),
         usedLiveAdapter: false,
         providerMode: "provider_error",
+        diagnostics,
       };
     }
   }
@@ -746,6 +858,7 @@ export async function buildMarketContextRow(
     riskWarning: buildRiskWarning(fallbackQuality, providerStatus, runtime.riskWarning),
     usedLiveAdapter: false,
     providerMode,
+    diagnostics: runtime.mode === "sample" ? undefined : buildProviderDiagnostics(runtime, undefined, "provider_env_incomplete"),
   };
 }
 
@@ -758,10 +871,22 @@ async function fetchLiveCandidateRows(
   includeMarketContext: boolean,
 ): Promise<MarketCandidateRows> {
   assertSupportedLiveAdapter(runtime);
-  const quotePayload = await providerPostJson("/quotes", {
+  if (runtime.providerAdapter === "alpha_vantage") {
+    return fetchAlphaVantageCandidateRows(symbols, provider, fallbackProvider, runtime, observedAt, includeMarketContext);
+  }
+
+  const quoteResult = await providerPostJson("/quotes", {
     symbol_codes: symbols.map((symbol) => symbol.symbol_code),
   });
+  const quotePayload = quoteResult.payload;
+  const diagnostics = { ...quoteResult.diagnostics };
   const quoteItems = extractArrayPayload(quotePayload, ["quotes", "data", "items"]);
+  if (quoteItems.length === 0) {
+    throw new ProviderFetchError("Provider JSON does not contain quote items", {
+      ...diagnostics,
+      fallback_reason: "provider_json_missing_quotes",
+    });
+  }
   const quoteBySymbol = new Map<string, ProviderQuoteResponse>();
   for (const item of quoteItems) {
     if (!isRecord(item)) continue;
@@ -773,9 +898,12 @@ async function fetchLiveCandidateRows(
   const ohlcvBars: NormalizedOhlcvBar[] = [];
   const technicalIndicators: NormalizedTechnicalIndicator[] = [];
   const fallbackWarnings: RiskWarning[] = [];
+  const liveSymbols: string[] = [];
+  const fallbackSymbols: string[] = [];
   for (const symbol of symbols) {
     const providerItem = quoteBySymbol.get(symbol.symbol_code);
     if (!providerItem) {
+      fallbackSymbols.push(symbol.symbol_code);
       fallbackWarnings.push({
         level: "medium",
         message: `${symbol.symbol_code} belum tersedia dari provider; memakai fallback stale.`,
@@ -789,6 +917,7 @@ async function fetchLiveCandidateRows(
 
     const normalizedQuote = normalizeProviderQuote(symbol, providerItem, observedAt, provider);
     if (!hasUsablePriceSnapshot(normalizedQuote)) {
+      fallbackSymbols.push(symbol.symbol_code);
       fallbackWarnings.push({
         level: "medium",
         message: `${symbol.symbol_code} payload provider belum punya price/volume valid; memakai fallback stale.`,
@@ -801,16 +930,22 @@ async function fetchLiveCandidateRows(
     }
 
     priceSnapshots.push(normalizedQuote);
+    liveSymbols.push(symbol.symbol_code);
     const ohlcvBar = ohlcvBarFromQuote(symbol, normalizedQuote, provider);
     if (ohlcvBar) ohlcvBars.push(ohlcvBar);
     technicalIndicators.push(providerIndicatorFromQuote(symbol, normalizedQuote, provider));
   }
 
-  const marketContext = includeMarketContext
-    ? await fetchLiveMarketContext(provider, observedAt).catch(() =>
-      sampleMarketContext(fallbackProvider.provider_name, fallbackProvider.id, observedAt, "stale")
-    )
-    : null;
+  let marketContext: NormalizedMarketContext | null = null;
+  let marketContextFallback = false;
+  if (includeMarketContext) {
+    try {
+      marketContext = await fetchLiveMarketContext(provider, observedAt);
+    } catch {
+      marketContextFallback = true;
+      marketContext = sampleMarketContext(fallbackProvider.provider_name, fallbackProvider.id, observedAt, "stale");
+    }
+  }
 
   const hasFallback = fallbackWarnings.length > 0 || technicalIndicators.some((row) => !isProviderFreshQuality(row.data_quality)) ||
     Boolean(marketContext && !isProviderFreshQuality(marketContext.data_quality));
@@ -826,6 +961,8 @@ async function fetchLiveCandidateRows(
     ohlcvBars,
     technicalIndicators,
     marketContext,
+    liveSymbols,
+    fallbackSymbols,
     dataQuality,
     providerStatus: hasFallback
       ? "provider live aktif dengan sebagian data fallback"
@@ -833,6 +970,16 @@ async function fetchLiveCandidateRows(
     riskWarning: buildRiskWarning(dataQuality, runtime.providerStatus, fallbackWarnings),
     usedLiveAdapter: true,
     providerMode: hasFallback ? "provider_error" : "live",
+    diagnostics: hasFallback
+      ? {
+        ...diagnostics,
+        fallback_reason: fallbackWarnings.length > 0
+          ? "provider_payload_missing_or_incomplete_symbols"
+          : marketContextFallback
+          ? "market_context_fallback"
+          : "provider_payload_stale_or_partial",
+      }
+      : undefined,
   };
 }
 
@@ -969,14 +1116,298 @@ function ohlcvBarFromQuote(
   };
 }
 
+async function fetchAlphaVantageCandidateRows(
+  symbols: SymbolRow[],
+  provider: ProviderSource,
+  fallbackProvider: ProviderSource,
+  runtime: ProviderRuntime,
+  observedAt: string,
+  includeMarketContext: boolean,
+): Promise<MarketCandidateRows> {
+  const priceSnapshots: NormalizedPriceSnapshot[] = [];
+  const ohlcvBars: NormalizedOhlcvBar[] = [];
+  const technicalIndicators: NormalizedTechnicalIndicator[] = [];
+  const fallbackWarnings: RiskWarning[] = [];
+  const liveSymbols: string[] = [];
+  const fallbackSymbols: string[] = [];
+  let latestDiagnostics: ProviderDiagnostics | undefined;
+
+  for (const symbol of symbols) {
+    try {
+      const quoteResult = await fetchAlphaVantageQuote(symbol);
+      latestDiagnostics = quoteResult.diagnostics;
+      const normalizedQuote = normalizeAlphaVantageQuote(symbol, quoteResult.quote, observedAt, provider);
+
+      if (!hasUsablePriceSnapshot(normalizedQuote)) {
+        throw new ProviderFetchError("Alpha Vantage quote has no usable price fields", {
+          ...quoteResult.diagnostics,
+          fallback_reason: "alpha_vantage_quote_incomplete",
+        });
+      }
+
+      priceSnapshots.push(normalizedQuote);
+      liveSymbols.push(symbol.symbol_code);
+
+      let ohlcvBar: NormalizedOhlcvBar | null = null;
+      try {
+        ohlcvBar = await fetchAlphaVantageDailyBar(symbol, normalizedQuote.provider_symbol, provider);
+      } catch {
+        ohlcvBar = ohlcvBarFromQuote(symbol, normalizedQuote, provider);
+      }
+      if (ohlcvBar) ohlcvBars.push(ohlcvBar);
+
+      technicalIndicators.push(providerIndicatorFromQuote(symbol, normalizedQuote, provider));
+    } catch (error) {
+      latestDiagnostics = diagnosticsFromError(error, runtime, symbols.length, "alpha_vantage_fetch_failed");
+      fallbackSymbols.push(symbol.symbol_code);
+      fallbackWarnings.push({
+        level: "medium",
+        message: `${symbol.symbol_code} belum tersedia dari Alpha Vantage; memakai fallback stale.`,
+      });
+      priceSnapshots.push(sampleQuote(symbol, observedAt, fallbackProvider.provider_name, fallbackProvider.id, "stale"));
+      technicalIndicators.push(sampleIndicator(symbol, observedAt, fallbackProvider.provider_name, fallbackProvider.id, "stale"));
+    }
+  }
+
+  let marketContext: NormalizedMarketContext | null = null;
+  let marketContextFallback = false;
+  if (includeMarketContext) {
+    try {
+      marketContext = await fetchAlphaVantageMarketContext(provider, observedAt);
+    } catch {
+      marketContextFallback = true;
+      marketContext = sampleMarketContext(fallbackProvider.provider_name, fallbackProvider.id, observedAt, "stale");
+    }
+  }
+
+  const hasFallback = fallbackWarnings.length > 0 || technicalIndicators.some((row) => !isProviderFreshQuality(row.data_quality)) ||
+    Boolean(marketContext && !isProviderFreshQuality(marketContext.data_quality));
+  const dataQuality = hasFallback ? "stale" : mergeProviderQualities([
+    ...priceSnapshots.map((row) => row.data_quality),
+    ...ohlcvBars.map((row) => row.data_quality),
+    ...technicalIndicators.map((row) => row.data_quality),
+    ...(marketContext ? [marketContext.data_quality] : []),
+  ]);
+
+  return {
+    priceSnapshots,
+    ohlcvBars,
+    technicalIndicators,
+    marketContext,
+    liveSymbols,
+    fallbackSymbols,
+    dataQuality,
+    providerStatus: hasFallback
+      ? "Alpha Vantage aktif dengan sebagian data fallback"
+      : runtime.providerStatus,
+    riskWarning: buildRiskWarning(dataQuality, runtime.providerStatus, fallbackWarnings),
+    usedLiveAdapter: true,
+    providerMode: hasFallback ? "provider_error" : "live",
+    diagnostics: hasFallback && latestDiagnostics
+      ? {
+        ...latestDiagnostics,
+        fallback_reason: fallbackWarnings.length > 0
+          ? "alpha_vantage_payload_missing_or_incomplete_symbols"
+          : marketContextFallback
+          ? "market_context_fallback"
+          : "alpha_vantage_payload_stale_or_partial",
+      }
+      : undefined,
+  };
+}
+
+async function fetchAlphaVantageQuote(symbol: SymbolRow): Promise<AlphaVantageQuoteResult> {
+  let latestDiagnostics: ProviderDiagnostics | undefined;
+  const candidates = alphaVantageSymbolCandidates(symbol.symbol_code);
+  for (let index = 0; index < candidates.length; index += 1) {
+    const providerSymbol = candidates[index];
+    const result = await alphaVantageQuery("GLOBAL_QUOTE", providerSymbol);
+    latestDiagnostics = result.diagnostics;
+    const quote = extractAlphaVantageQuote(result.payload);
+    if (quote) {
+      return {
+        quote,
+        providerSymbol,
+        diagnostics: result.diagnostics,
+      };
+    }
+
+    if (isAlphaVantageHardFailure(result.payload) || result.diagnostics.fallback_reason !== "none") {
+      latestDiagnostics = {
+        ...result.diagnostics,
+        fallback_reason: alphaVantageFallbackReason(result.payload),
+      };
+      const canRetryWithSuffix = latestDiagnostics.fallback_reason === "alpha_vantage_unsupported_symbol" && index < candidates.length - 1;
+      if (canRetryWithSuffix) continue;
+      throw new ProviderFetchError("Alpha Vantage quote response is invalid or unsupported", latestDiagnostics);
+    }
+  }
+
+  throw new ProviderFetchError("Alpha Vantage quote response is invalid or unsupported", {
+    ...(latestDiagnostics ??
+      buildProviderDiagnosticsFromConfig(
+        envFirst(["MARKET_DATA_PROVIDER_BASE_URL", "MARKET_DATA_API_BASE_URL"]),
+        Boolean(envFirst(["MARKET_DATA_PROVIDER_API_KEY", "MARKET_DATA_API_KEY"])),
+        1,
+        "alpha_vantage_quote_missing",
+      )),
+    fallback_reason: latestDiagnostics?.fallback_reason && latestDiagnostics.fallback_reason !== "none"
+      ? latestDiagnostics.fallback_reason
+      : "alpha_vantage_quote_missing",
+  });
+}
+
+async function fetchAlphaVantageDailyBar(
+  symbol: SymbolRow,
+  providerSymbol: string,
+  provider: ProviderSource,
+): Promise<NormalizedOhlcvBar | null> {
+  const shouldFetchDaily = boolEnv("MARKET_DATA_ALPHA_VANTAGE_FETCH_DAILY", true);
+  if (!shouldFetchDaily) return null;
+
+  const result = await alphaVantageQuery("TIME_SERIES_DAILY", providerSymbol, {
+    outputsize: "compact",
+  });
+  const dailySeries = extractAlphaVantageDailySeries(result.payload);
+  if (!dailySeries) {
+    throw new ProviderFetchError("Alpha Vantage daily series response is invalid", {
+      ...result.diagnostics,
+      fallback_reason: alphaVantageFallbackReason(result.payload),
+    });
+  }
+
+  const latestDate = Object.keys(dailySeries).sort().reverse()[0];
+  const latestBar = latestDate ? dailySeries[latestDate] : null;
+  if (!latestDate || !isRecord(latestBar)) return null;
+
+  const open = nullableNumber(latestBar["1. open"] ?? latestBar.open);
+  const high = nullableNumber(latestBar["2. high"] ?? latestBar.high);
+  const low = nullableNumber(latestBar["3. low"] ?? latestBar.low);
+  const close = nullableNumber(latestBar["4. close"] ?? latestBar.close);
+  if (open === null || high === null || low === null || close === null) return null;
+
+  const quality = alphaVantageDataQuality(latestDate);
+  return {
+    symbol_id: symbol.id,
+    symbol_code: symbol.symbol_code,
+    provider_source_id: provider.id,
+    provider_name: provider.provider_name,
+    provider_symbol: providerSymbol,
+    timeframe: "1d",
+    observed_at: alphaVantageObservedAt(latestDate),
+    open_price: open,
+    high_price: high,
+    low_price: low,
+    close_price: close,
+    volume: nullableNumber(latestBar["5. volume"] ?? latestBar.volume),
+    value_traded: null,
+    data_quality: quality,
+    raw_payload: {
+      source: "alpha_vantage_time_series_daily",
+      contract_version: CONTRACT_VERSION,
+      note: "Latest daily OHLCV normalized from Alpha Vantage; raw response is not stored.",
+    },
+  };
+}
+
+async function fetchAlphaVantageMarketContext(
+  provider: ProviderSource,
+  observedAt: string,
+): Promise<NormalizedMarketContext> {
+  const indexSymbol = Deno.env.get("MARKET_DATA_ALPHA_VANTAGE_INDEX_SYMBOL")?.trim() || DEFAULT_INDEX_SYMBOL;
+  const result = await alphaVantageQuery("GLOBAL_QUOTE", indexSymbol);
+  const quote = extractAlphaVantageQuote(result.payload);
+  if (!quote) {
+    throw new ProviderFetchError("Alpha Vantage market context response is invalid", {
+      ...result.diagnostics,
+      fallback_reason: alphaVantageFallbackReason(result.payload),
+    });
+  }
+
+  const latestDay = nullableString(quote["07. latest trading day"]);
+  const sourceTime = alphaVantageObservedAt(latestDay ?? observedAt);
+  const quality = alphaVantageDataQuality(sourceTime);
+  const changePercent = alphaVantagePercent(quote["10. change percent"]);
+  return {
+    provider_source_id: provider.id,
+    provider_name: provider.provider_name,
+    market_code: DEFAULT_MARKET_CODE,
+    index_symbol: indexSymbol,
+    observed_at: sourceTime,
+    index_last: nullableNumber(quote["05. price"]),
+    index_change: nullableNumber(quote["09. change"]),
+    index_change_percent: changePercent,
+    index_trend: changePercent === null ? "needs_more_data" : changePercent >= 0 ? "watchlist_context_positive" : "risk_warning_context",
+    market_status: "provider aktif",
+    risk_regime: "needs_more_data",
+    breadth_summary: {
+      source: "alpha_vantage_global_quote",
+      note: "Market context memakai index quote dari provider bila tersedia.",
+    },
+    context_payload: {
+      label: "provider data",
+      contract_version: CONTRACT_VERSION,
+      disclaimer: "Data market context hanya untuk edukasi.",
+    },
+    data_quality: quality,
+    is_stale: !isProviderFreshQuality(quality),
+    staleness_warning: !isProviderFreshQuality(quality) ? STALE_PROVIDER_WARNING : null,
+  };
+}
+
+function normalizeAlphaVantageQuote(
+  symbol: SymbolRow,
+  quote: Record<string, unknown>,
+  fallbackObservedAt: string,
+  provider: ProviderSource,
+): NormalizedPriceSnapshot {
+  const latestDay = nullableString(quote["07. latest trading day"]);
+  const observedAt = alphaVantageObservedAt(latestDay ?? fallbackObservedAt);
+  const dataQuality = alphaVantageDataQuality(observedAt);
+  const lastPrice = nullableNumber(quote["05. price"]);
+  const volume = nullableNumber(quote["06. volume"]);
+  const changeValue = nullableNumber(quote["09. change"]);
+  const changePercent = alphaVantagePercent(quote["10. change percent"]);
+
+  return {
+    symbol_id: symbol.id,
+    symbol_code: symbol.symbol_code,
+    provider_source_id: provider.id,
+    provider_name: provider.provider_name,
+    provider_symbol: nullableString(quote["01. symbol"]) ?? symbol.symbol_code,
+    observed_at: observedAt,
+    last_price: lastPrice,
+    previous_close: nullableNumber(quote["08. previous close"]),
+    open_price: nullableNumber(quote["02. open"]),
+    high_price: nullableNumber(quote["03. high"]),
+    low_price: nullableNumber(quote["04. low"]),
+    change_value: changeValue,
+    change_percent: changePercent,
+    volume,
+    value_traded: lastPrice !== null && volume !== null ? round(lastPrice * volume, 2) : null,
+    market_cap: null,
+    currency: symbol.currency ?? "IDR",
+    data_quality: dataQuality,
+    is_stale: !isProviderFreshQuality(dataQuality),
+    staleness_warning: !isProviderFreshQuality(dataQuality) ? STALE_PROVIDER_WARNING : null,
+    raw_payload: {
+      source: "alpha_vantage_global_quote",
+      contract_version: CONTRACT_VERSION,
+      source_time: observedAt,
+      note: "Alpha Vantage quote normalized; API key and raw response are not exposed.",
+    },
+  };
+}
+
 async function fetchLiveMarketContext(
   provider: ProviderSource,
   observedAt: string,
 ): Promise<NormalizedMarketContext> {
-  const payload = await providerPostJson("/market-context", {
+  const result = await providerPostJson("/market-context", {
     market_code: DEFAULT_MARKET_CODE,
     index_symbol: DEFAULT_INDEX_SYMBOL,
   });
+  const payload = result.payload;
   const context = extractRecordPayload(payload, ["market_context", "context", "data"]);
   const contextObservedAt = nullableString(context.source_time) ?? nullableString(context.observed_at) ??
     nullableString(context.timestamp) ?? nullableString(context.time) ?? nullableString(context.date) ?? observedAt;
@@ -1008,15 +1439,173 @@ async function fetchLiveMarketContext(
 }
 
 function assertSupportedLiveAdapter(runtime: ProviderRuntime): void {
-  if (runtime.providerAdapter !== "generic_json") {
+  if (!["generic_json", "alpha_vantage"].includes(runtime.providerAdapter)) {
     throw new Error(`Unsupported live provider adapter: ${runtime.providerAdapter}`);
   }
 }
 
-async function providerPostJson(pathKey: "/quotes" | "/market-context", body: Record<string, unknown>): Promise<unknown> {
+async function alphaVantageQuery(
+  functionName: "GLOBAL_QUOTE" | "TIME_SERIES_DAILY",
+  providerSymbol: string,
+  extraParams: Record<string, string> = {},
+): Promise<ProviderJsonResult> {
   const baseUrl = envFirst(["MARKET_DATA_PROVIDER_BASE_URL", "MARKET_DATA_API_BASE_URL"]);
   const apiKey = envFirst(["MARKET_DATA_PROVIDER_API_KEY", "MARKET_DATA_API_KEY"]);
-  if (!baseUrl || !apiKey) throw new Error("Market data provider env is incomplete");
+  const diagnostics = buildProviderDiagnosticsFromConfig(baseUrl, Boolean(apiKey), 1, "alpha_vantage_request_started");
+  if (!baseUrl || !apiKey) {
+    throw new ProviderFetchError("Alpha Vantage env is incomplete", {
+      ...diagnostics,
+      fallback_reason: "provider_env_incomplete",
+    });
+  }
+
+  const url = new URL(baseUrl);
+  url.searchParams.set("function", functionName);
+  url.searchParams.set("symbol", providerSymbol);
+  url.searchParams.set("apikey", apiKey);
+  for (const [key, value] of Object.entries(extraParams)) {
+    url.searchParams.set(key, value);
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "Accept": "application/json",
+      },
+      signal: controller.signal,
+    });
+    const responseDiagnostics: ProviderDiagnostics = {
+      ...diagnostics,
+      provider_http_status: response.status,
+      provider_status_code: response.status,
+      provider_content_type: response.headers.get("content-type"),
+      fallback_reason: response.ok ? "none" : `provider_http_${response.status}`,
+    };
+    const text = await response.text();
+    let payload: unknown;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      throw new ProviderFetchError("Alpha Vantage returned invalid JSON", {
+        ...responseDiagnostics,
+        fallback_reason: "provider_invalid_json",
+      });
+    }
+
+    const responseKeys = topLevelJsonKeys(payload);
+    const diagnosticsWithKeys: ProviderDiagnostics = {
+      ...responseDiagnostics,
+      json_top_level_keys: responseKeys,
+      provider_response_keys: responseKeys,
+    };
+
+    if (!response.ok) {
+      throw new ProviderFetchError(`Alpha Vantage returned HTTP ${response.status}`, diagnosticsWithKeys);
+    }
+
+    const fallbackReason = alphaVantageFallbackReason(payload);
+    return {
+      payload,
+      diagnostics: {
+        ...diagnosticsWithKeys,
+        fallback_reason: fallbackReason,
+      },
+    };
+  } catch (error) {
+    if (error instanceof ProviderFetchError) throw error;
+    throw new ProviderFetchError("Alpha Vantage request failed", {
+      ...diagnostics,
+      fallback_reason: error instanceof DOMException && error.name === "AbortError"
+        ? "provider_timeout"
+        : "provider_request_failed",
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function alphaVantageSymbolCandidates(symbolCode: string): string[] {
+  const normalized = symbolCode.trim().toUpperCase();
+  const candidates = [normalized];
+  const configuredSuffix = Deno.env.get("MARKET_DATA_ALPHA_VANTAGE_SYMBOL_SUFFIX")?.trim() ??
+    Deno.env.get("MARKET_DATA_PROVIDER_SYMBOL_SUFFIX")?.trim();
+  const suffix = configuredSuffix || ".JK";
+  if (suffix && !normalized.endsWith(suffix.toUpperCase()) && /^[A-Z0-9]{2,8}$/.test(normalized)) {
+    candidates.push(`${normalized}${suffix.toUpperCase()}`);
+  }
+  return [...new Set(candidates)];
+}
+
+function extractAlphaVantageQuote(payload: unknown): Record<string, unknown> | null {
+  if (!isRecord(payload)) return null;
+  const quote = payload["Global Quote"];
+  if (!isRecord(quote)) return null;
+  return Object.keys(quote).length > 0 ? quote : null;
+}
+
+function extractAlphaVantageDailySeries(payload: unknown): Record<string, unknown> | null {
+  if (!isRecord(payload)) return null;
+  const series = payload["Time Series (Daily)"];
+  return isRecord(series) ? series : null;
+}
+
+function isAlphaVantageHardFailure(payload: unknown): boolean {
+  return alphaVantageFallbackReason(payload) !== "none";
+}
+
+function alphaVantageFallbackReason(payload: unknown): string {
+  if (!isRecord(payload)) return "provider_invalid_json";
+  if (typeof payload["Error Message"] === "string") return "alpha_vantage_unsupported_symbol";
+  if (typeof payload.Note === "string") return "alpha_vantage_rate_limit";
+  if (typeof payload.Information === "string") return "alpha_vantage_information_message";
+  return "none";
+}
+
+function alphaVantageObservedAt(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isFinite(parsed.getTime())) return parsed.toISOString();
+  return new Date().toISOString();
+}
+
+function alphaVantageDataQuality(observedAt: string): MarketDataQuality {
+  const maxAgeDays = numberFromEnv("MARKET_DATA_ALPHA_VANTAGE_STALE_DAYS", 7, 0, 30);
+  const observedTime = new Date(observedAt).getTime();
+  if (!Number.isFinite(observedTime)) return "stale";
+  const ageDays = (Date.now() - observedTime) / 86_400_000;
+  return ageDays <= maxAgeDays ? "delayed" : "stale";
+}
+
+function alphaVantagePercent(value: unknown): number | null {
+  if (typeof value === "string") return nullableNumber(value.replace("%", ""));
+  return nullableNumber(value);
+}
+
+function boolEnv(name: string, fallback: boolean): boolean {
+  const value = Deno.env.get(name)?.trim().toLowerCase();
+  if (value === "true" || value === "1" || value === "yes") return true;
+  if (value === "false" || value === "0" || value === "no") return false;
+  return fallback;
+}
+
+function numberFromEnv(name: string, fallback: number, min: number, max: number): number {
+  const parsed = Number(Deno.env.get(name) ?? fallback);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+async function providerPostJson(pathKey: "/quotes" | "/market-context", body: Record<string, unknown>): Promise<ProviderJsonResult> {
+  const baseUrl = envFirst(["MARKET_DATA_PROVIDER_BASE_URL", "MARKET_DATA_API_BASE_URL"]);
+  const apiKey = envFirst(["MARKET_DATA_PROVIDER_API_KEY", "MARKET_DATA_API_KEY"]);
+  const diagnostics = buildProviderDiagnosticsFromConfig(baseUrl, Boolean(apiKey), requestedSymbolCountFromBody(body), "provider_request_started");
+  if (!baseUrl || !apiKey) {
+    throw new ProviderFetchError("Market data provider env is incomplete", {
+      ...diagnostics,
+      fallback_reason: "provider_env_incomplete",
+    });
+  }
 
   const pathEnv = pathKey === "/quotes" ? "MARKET_DATA_QUOTES_PATH" : "MARKET_DATA_CONTEXT_PATH";
   const configuredPath = Deno.env.get(pathEnv)?.trim() || pathKey;
@@ -1047,8 +1636,48 @@ async function providerPostJson(pathKey: "/quotes" | "/market-context", body: Re
       body: method === "POST" ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
-    if (!response.ok) throw new Error(`Provider returned HTTP ${response.status}`);
-    return await response.json();
+    const responseDiagnostics: ProviderDiagnostics = {
+      ...diagnostics,
+      provider_http_status: response.status,
+      provider_status_code: response.status,
+      provider_content_type: response.headers.get("content-type"),
+      fallback_reason: response.ok ? "none" : `provider_http_${response.status}`,
+    };
+    const text = await response.text();
+    let payload: unknown;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      throw new ProviderFetchError("Provider returned invalid JSON", {
+        ...responseDiagnostics,
+        fallback_reason: "provider_invalid_json",
+      });
+    }
+    const jsonTopLevelKeys = topLevelJsonKeys(payload);
+    if (!response.ok) {
+      throw new ProviderFetchError(`Provider returned HTTP ${response.status}`, {
+        ...responseDiagnostics,
+        json_top_level_keys: jsonTopLevelKeys,
+        provider_response_keys: jsonTopLevelKeys,
+      });
+    }
+    return {
+      payload,
+      diagnostics: {
+        ...responseDiagnostics,
+        json_top_level_keys: jsonTopLevelKeys,
+        provider_response_keys: jsonTopLevelKeys,
+        fallback_reason: "none",
+      },
+    };
+  } catch (error) {
+    if (error instanceof ProviderFetchError) throw error;
+    throw new ProviderFetchError("Provider request failed", {
+      ...diagnostics,
+      fallback_reason: error instanceof DOMException && error.name === "AbortError"
+        ? "provider_timeout"
+        : "provider_request_failed",
+    });
   } finally {
     clearTimeout(timeout);
   }
