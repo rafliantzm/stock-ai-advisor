@@ -24,7 +24,7 @@ class StockDetailScreen extends StatelessWidget {
           AppSectionHeader(
             title: '${analysis.symbolCode} Analysis',
             subtitle:
-                '${analysis.companyName} - ${analysis.sourceLabel}. Tidak memakai market data real-time.',
+                '${analysis.companyName} - ${analysis.sourceLabel}. Market data P2 tersedia sebagai delayed provider context.',
             trailing: StatusBadge(label: analysis.candidateLabel),
           ),
           const SizedBox(height: 16),
@@ -66,10 +66,11 @@ class _PriceSnapshot extends StatelessWidget {
   Widget build(BuildContext context) {
     return SectionCard(
       title: 'Price Snapshot',
-      subtitle: 'Sample price snapshot - provider belum aktif',
+      subtitle:
+          'P2 delayed provider context - price detail per symbol masih tahap integrasi',
       child: ResponsiveGrid(
         children: [
-          const MetricTile(label: 'market price', value: 'needs_more_data'),
+          const MetricTile(label: 'market price', value: 'Data belum cukup'),
           MetricTile(label: 'Final', value: analysis.overallScore),
           MetricTile(label: 'Invalidation', value: analysis.invalidationLevel),
         ],
@@ -188,10 +189,10 @@ class _FundamentalSnapshot extends StatelessWidget {
       child: ResponsiveGrid(
         children: [
           MetricTile(label: 'Fundamental', value: analysis.fundamentalScore),
-          const MetricTile(label: 'growth context', value: 'needs_more_data'),
+          const MetricTile(label: 'growth context', value: 'Data belum cukup'),
           const MetricTile(
             label: 'valuation context',
-            value: 'needs_more_data',
+            value: 'Data belum cukup',
           ),
         ],
       ),
@@ -242,7 +243,7 @@ class _StrategyExplanation extends StatelessWidget {
       title: 'Strategy Explanation',
       subtitle: 'AI/RAG belum aktif',
       child: Text(
-        'P1 menampilkan penjelasan deterministik dari score backend. Rule version ${analysis.ruleVersion} menjadi sumber utama, sementara AI/RAG akan ditambahkan sebagai explanation layer pada tahap berikutnya.',
+        'P1 menampilkan penjelasan deterministik dari score backend. ${analysis.ruleVersionLabel} menjadi sumber utama, sementara AI/RAG akan ditambahkan sebagai explanation layer pada tahap berikutnya.',
       ),
     );
   }

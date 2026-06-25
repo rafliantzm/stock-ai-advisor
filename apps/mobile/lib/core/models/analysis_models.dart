@@ -10,7 +10,7 @@ class RiskWarning {
     }
     return RiskWarning(
       level: map['level']?.toString() ?? 'medium',
-      message: map['message']?.toString() ?? 'needs_more_data',
+      message: map['message']?.toString() ?? 'Data belum cukup',
       metric: map['metric']?.toString(),
     );
   }
@@ -85,7 +85,7 @@ class StockAnalysis {
           '-',
       companyName: symbol['company_name']?.toString() ?? 'Company data pending',
       candidateLabel:
-          latestScore['candidate_label']?.toString() ?? 'needs_more_data',
+          latestScore['candidate_label']?.toString() ?? 'Data belum cukup',
       overallScore: finalScore,
       technicalScore: _num(latestScore['technical_score']),
       harmonyScore: _num(latestScore['harmony_score']),
@@ -108,12 +108,17 @@ class StockAnalysis {
       technicalSetup:
           latestScore['technical_setup']?.toString() ?? 'needs_more_data',
       sourceLabel: latestScore.isEmpty
-          ? 'Sample analysis - latest_score belum tersedia'
-          : 'P1 analysis adapter - berbasis latest_score P0',
+          ? 'Analisis awal - latest score belum tersedia'
+          : 'Analisis P1 - berbasis latest score dan konteks provider P2 delayed',
     );
   }
 
   bool get hasScore => overallScore != null;
+
+  String get ruleVersionLabel {
+    if (ruleVersion == 'p0_dummy_scoring_v1') return 'Rule scoring awal';
+    return ruleVersion.replaceAll('_', ' ');
+  }
 
   static List<RiskWarning> _riskWarnings(Map<String, dynamic> latestScore) {
     final raw = latestScore['risk_warnings'] ?? latestScore['risk_warning'];

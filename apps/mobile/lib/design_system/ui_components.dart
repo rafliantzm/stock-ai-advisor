@@ -100,7 +100,7 @@ class ScorePill extends StatelessWidget {
     if (value == null) return 'Menunggu data';
     final text = value.toString().trim();
     if (text.isEmpty || text == '-') return 'Menunggu data';
-    return text;
+    return humanizeUiText(text);
   }
 }
 
@@ -120,7 +120,7 @@ class StatusBadge extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         child: Text(
-          label.replaceAll('_', ' '),
+          humanizeUiText(label),
           style: Theme.of(
             context,
           ).textTheme.labelMedium?.copyWith(color: scheme.onPrimaryContainer),
@@ -234,7 +234,7 @@ class MetricTile extends StatelessWidget {
     if (value == null) return 'Menunggu data';
     final text = value.toString().trim();
     if (text.isEmpty || text == '-') return 'Menunggu data';
-    return text;
+    return humanizeUiText(text);
   }
 }
 
@@ -265,14 +265,16 @@ class RiskWarningBox extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    level == null ? 'risk warning' : 'risk warning - $level',
+                    level == null
+                        ? 'risk warning'
+                        : 'risk warning - ${humanizeUiText(level!)}',
                     style: Theme.of(context).textTheme.labelLarge?.copyWith(
                       color: scheme.onErrorContainer,
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    message,
+                    humanizeUiText(message),
                     style: TextStyle(color: scheme.onErrorContainer),
                   ),
                 ],
@@ -330,7 +332,9 @@ class CompactRiskWarningList extends StatelessWidget {
                         borderRadius: BorderRadius.circular(999),
                       ),
                       child: Text(
-                        item.level,
+                        humanizeUiText(item.level),
+                        // Level labels are intentionally compact, but still
+                        // humanized so backend enum names do not leak.
                         style: Theme.of(context).textTheme.labelSmall?.copyWith(
                           color: scheme.onErrorContainer,
                         ),
@@ -353,6 +357,33 @@ class CompactRiskWarningList extends StatelessWidget {
       ),
     );
   }
+}
+
+String humanizeUiText(Object? value) {
+  if (value == null) return 'Menunggu data';
+  final text = value.toString().trim();
+  if (text.isEmpty || text == '-') return 'Menunggu data';
+  final normalized = text.toLowerCase();
+  const exact = {
+    'needs_more_data': 'Data belum cukup',
+    'p0_dummy_scoring_v1': 'Rule scoring awal',
+    'sample_provider': 'Fallback sample provider',
+    'mixed_live_providers': 'Multi-provider live data',
+    'provider_chain_resolved': 'Provider live tersambung',
+    'alpha_vantage': 'Alpha Vantage',
+    'twelve_data': 'Twelve Data',
+    'eodhd': 'EODHD',
+    'delayed': 'Delayed Live Data',
+    'live': 'Live',
+    'stale': 'Stale',
+    'sample': 'Sample data',
+    'provider_backed_context': 'Provider-backed context',
+    'p2_provider_indicator_contract_v1': 'Rule indikator provider P2',
+    'p2_sample_indicator_v1': 'Rule indikator sample P2',
+  };
+  final mapped = exact[normalized];
+  if (mapped != null) return mapped;
+  return text.replaceAll('_', ' ');
 }
 
 class CompactRiskWarningItem {
@@ -379,7 +410,7 @@ class ResponsiveGrid extends StatelessWidget {
         final columns = (constraints.maxWidth / minWidth).floor().clamp(1, 4);
         return GridView.count(
           crossAxisCount: columns,
-          childAspectRatio: 2.35,
+          mainAxisExtent: 148,
           mainAxisSpacing: 10,
           crossAxisSpacing: 10,
           shrinkWrap: true,

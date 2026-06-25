@@ -60,7 +60,8 @@ class _MarketContextScreenState extends State<MarketContextScreen> {
     if (response == null) {
       return AsyncStateView(
         title: 'Market context kosong',
-        message: 'provider belum aktif atau sample data belum tersedia.',
+        message:
+            'Market context belum tersedia; jalankan sync market data atau refresh sesi.',
         action: FilledButton(onPressed: _load, child: const Text('Muat ulang')),
       );
     }
@@ -104,7 +105,7 @@ class _MarketContextScreenState extends State<MarketContextScreen> {
           SectionCard(
             title: '${market.marketCode} / ${market.indexSymbol}',
             subtitle:
-                '${response.provider.providerName} - ${response.provider.providerStatus}',
+                '${humanizeUiText(response.provider.providerName)} - ${humanizeUiText(response.provider.providerStatus)}',
             child: ResponsiveGrid(
               children: [
                 MetricTile(label: 'Market Status', value: market.marketStatus),

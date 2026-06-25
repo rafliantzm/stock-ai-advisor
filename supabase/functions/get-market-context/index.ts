@@ -62,6 +62,7 @@ Deno.serve(async (req) => {
     if (snapshotError) throw databaseError("Failed to load market context", snapshotError);
 
     let snapshot = snapshots?.[0] ?? null;
+    const latestSyncSummary = await loadLatestProviderBackedSyncSummary(supabase);
     let providerMode = runtime.mode;
     let providerStatusOverride: string | null = null;
 
@@ -88,6 +89,24 @@ Deno.serve(async (req) => {
     }
 
     const marketContext = sanitizeMarketContext(snapshot, ttlSeconds, runtime);
+    if (latestSyncSummary && shouldUseSyncSummary(marketContext)) {
+      marketContext.market_status = latestSyncSummary.marketStatus;
+      marketContext.index_trend = "Provider-backed watchlist context";
+      marketContext.risk_regime = "Risk-aware delayed context";
+      marketContext.last_updated = latestSyncSummary.observedAt;
+      marketContext.data_quality = latestSyncSummary.dataQuality;
+      marketContext.provider_status = latestSyncSummary.providerStatus;
+      marketContext.is_stale = false;
+      marketContext.staleness_warning = null;
+      marketContext.risk_warning = latestSyncSummary.dataQuality === "delayed"
+        ? [{
+          level: "low",
+          message: "Data provider bersifat delayed; gunakan sebagai konteks edukatif watchlist candidate.",
+        }]
+        : [];
+      providerMode = "live";
+      providerStatusOverride = latestSyncSummary.providerStatus;
+    }
     if (providerStatusOverride) {
       marketContext.provider_status = providerStatusOverride;
     }
@@ -101,7 +120,7 @@ Deno.serve(async (req) => {
       market_context: marketContext,
       provider: {
         ...providerMeta(runtime),
-        provider_name: snapshot?.provider_name ?? runtime.activeProviderName,
+        provider_name: latestSyncSummary?.providerName ?? snapshot?.provider_name ?? runtime.activeProviderName,
         provider_mode: effectiveProviderMode,
         provider_status: marketContext.provider_status,
         data_quality: marketContext.data_quality,
@@ -115,7 +134,7 @@ Deno.serve(async (req) => {
         "Market context bersifat edukatif untuk watchlist candidate, risk warning, dan invalidation level; bukan instruksi transaksi.",
     }, {
       data_quality: marketContext.data_quality,
-      provider_name: snapshot?.provider_name ?? runtime.activeProviderName,
+      provider_name: latestSyncSummary?.providerName ?? snapshot?.provider_name ?? runtime.activeProviderName,
       provider_status: marketContext.provider_status,
       provider_mode: effectiveProviderMode,
     });
@@ -123,3 +142,52 @@ Deno.serve(async (req) => {
     return fail(error);
   }
 });
+
+type ProviderBackedSyncSummary = {
+  providerName: string;
+  providerStatus: string;
+  dataQuality: "live" | "delayed" | "production";
+  observedAt: string;
+  marketStatus: string;
+};
+
+async function loadLatestProviderBackedSyncSummary(supabase: ReturnType<typeof createAdminClient>) {
+  const { data, error } = await supabase
+    .from("provider_sync_runs")
+    .select("provider_name, observed_at, finished_at, metadata")
+    .eq("sync_type", "quote")
+    .eq("status", "success")
+    .order("observed_at", { ascending: false })
+    .limit(1);
+
+  if (error) throw databaseError("Failed to load provider sync summary", error);
+  const row = data?.[0];
+  if (!row || !isRecord(row.metadata)) return null;
+
+  const metadata = row.metadata;
+  const dataQuality = metadata.data_quality?.toString();
+  const providerMode = metadata.provider_mode?.toString();
+  const fallbackCount = Number(metadata.fallback_symbol_count ?? 0);
+  const liveCount = Number(metadata.live_symbol_count ?? 0);
+  const isProviderBacked = providerMode === "live" &&
+    ["live", "delayed", "production"].includes(dataQuality ?? "") &&
+    fallbackCount === 0 &&
+    liveCount > 0;
+  if (!isProviderBacked) return null;
+
+  return {
+    providerName: "mixed_live_providers",
+    providerStatus: metadata.provider_status?.toString() ?? "Provider live aktif dengan kontribusi multi-provider",
+    dataQuality: dataQuality as ProviderBackedSyncSummary["dataQuality"],
+    observedAt: row.finished_at?.toString() ?? row.observed_at?.toString() ?? new Date().toISOString(),
+    marketStatus: "Provider-backed watchlist context",
+  } satisfies ProviderBackedSyncSummary;
+}
+
+function shouldUseSyncSummary(marketContext: ReturnType<typeof sanitizeMarketContext>): boolean {
+  return marketContext.data_quality === "sample" || marketContext.data_quality === "stale" || marketContext.is_stale;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
