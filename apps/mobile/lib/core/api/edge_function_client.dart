@@ -84,4 +84,16 @@ class EdgeFunctionClient {
     );
     return SyncMarketCandidatesResponse.fromResult(result.data, result.meta);
   }
+
+  Future<StockChartDataResponse> getStockChartData({
+    String symbolCode = 'BBCA',
+    String timeframe = '1d',
+    int limit = 60,
+  }) async {
+    final result = await post(
+      'get-stock-chart-data',
+      body: {'symbol_code': symbolCode, 'timeframe': timeframe, 'limit': limit},
+    );
+    return StockChartDataResponse.fromResult(result.data, result.meta);
+  }
 }
