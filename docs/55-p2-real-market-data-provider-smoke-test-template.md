@@ -44,6 +44,8 @@ Optional Alpha Vantage settings:
 
 - `MARKET_DATA_ALPHA_VANTAGE_SYMBOL_SUFFIX=.JK` for IDX suffix retry.
 - `MARKET_DATA_ALPHA_VANTAGE_SYMBOL_MAP={"BBCA":"BBCA.JK"}` for explicit provider symbol overrides.
+- Example IDX override coverage map:
+  `{"ASII":"ASII.JK","BBCA":"BBCA.JK","BBRI":"BBRI.JK","TLKM":"TLKM.JK","UNVR":"UNVR.JK"}`
 - `MARKET_DATA_ALPHA_VANTAGE_INDEX_SYMBOL=IHSG` or a provider-supported index symbol.
 - `MARKET_DATA_ALPHA_VANTAGE_FETCH_DAILY=true` to request latest daily OHLCV bars.
 - `MARKET_DATA_ALPHA_VANTAGE_STALE_DAYS=7` to control delayed daily data staleness.
@@ -117,8 +119,22 @@ Expected fallback result:
   - `provider_content_type`
   - `json_top_level_keys`
   - `provider_response_keys`
+  - `symbol_diagnostics`
   - `fallback_reason`
 - diagnostics must not include API key, Authorization header, JWT, service role key, full URL, or raw provider response
+
+Safe symbol diagnostics may include:
+
+- `requested_symbol`
+- `attempted_provider_symbols`
+- `selected_provider_symbol`
+- `fallback_reason`
+
+Symbol candidate order:
+
+1. Original internal symbol, for example `BBCA`.
+2. IDX suffix variant, for example `BBCA.JK`.
+3. Configured override value from `MARKET_DATA_ALPHA_VANTAGE_SYMBOL_MAP` when available.
 
 Alpha Vantage fallback examples:
 
@@ -156,6 +172,7 @@ Rate-limit/provider-message handling:
 - Top-level `Information` is treated as `alpha_vantage_information_response`.
 - Top-level `Note` is treated as `alpha_vantage_rate_limited`.
 - Top-level `Error Message` is treated as `alpha_vantage_invalid_symbol`.
+- If all configured variants fail for a symbol, mark it as `alpha_vantage_invalid_symbol` or quote-missing provider limitation, not a database failure.
 - Diagnostics include only safe metadata such as `provider_response_keys`, HTTP status, content type, host, and fallback reason.
 - Raw provider response and credentials must not be pasted into this report.
 

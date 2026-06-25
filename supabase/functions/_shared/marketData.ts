@@ -54,6 +54,14 @@ export type ProviderDiagnostics = {
   provider_content_type?: string | null;
   json_top_level_keys?: string[];
   provider_response_keys?: string[];
+  symbol_diagnostics?: ProviderSymbolDiagnostics[];
+  fallback_reason: string;
+};
+
+export type ProviderSymbolDiagnostics = {
+  requested_symbol: string;
+  attempted_provider_symbols: string[];
+  selected_provider_symbol: string | null;
   fallback_reason: string;
 };
 
@@ -222,6 +230,7 @@ type ProviderQuoteResponse = {
 type AlphaVantageQuoteResult = {
   quote: Record<string, unknown>;
   providerSymbol: string;
+  attemptedProviderSymbols: string[];
   diagnostics: ProviderDiagnostics;
 };
 
@@ -1135,6 +1144,7 @@ async function fetchAlphaVantageCandidateRows(
   const fallbackWarnings: RiskWarning[] = [];
   const liveSymbols: string[] = [];
   const fallbackSymbols: string[] = [];
+  const symbolDiagnostics: ProviderSymbolDiagnostics[] = [];
   let latestDiagnostics: ProviderDiagnostics | undefined;
   let providerStopState: AlphaVantageStopState | null = null;
 
@@ -1142,6 +1152,12 @@ async function fetchAlphaVantageCandidateRows(
     if (providerStopState) {
       latestDiagnostics = providerStopState.diagnostics;
       fallbackSymbols.push(symbol.symbol_code);
+      symbolDiagnostics.push(alphaVantageSymbolDiagnostic(
+        symbol.symbol_code,
+        [],
+        null,
+        providerStopState.reason,
+      ));
       fallbackWarnings.push({
         level: "medium",
         message: `${symbol.symbol_code} memakai fallback stale karena Alpha Vantage membatasi atau mengirim pesan provider.`,
@@ -1160,11 +1176,25 @@ async function fetchAlphaVantageCandidateRows(
         throw new ProviderFetchError("Alpha Vantage quote has no usable price fields", {
           ...quoteResult.diagnostics,
           fallback_reason: "alpha_vantage_quote_incomplete",
+          symbol_diagnostics: [
+            alphaVantageSymbolDiagnostic(
+              symbol.symbol_code,
+              quoteResult.attemptedProviderSymbols,
+              normalizedQuote.provider_symbol,
+              "alpha_vantage_quote_incomplete",
+            ),
+          ],
         });
       }
 
       priceSnapshots.push(normalizedQuote);
       liveSymbols.push(symbol.symbol_code);
+      symbolDiagnostics.push(alphaVantageSymbolDiagnostic(
+        symbol.symbol_code,
+        quoteResult.attemptedProviderSymbols,
+        normalizedQuote.provider_symbol,
+        "none",
+      ));
 
       let ohlcvBar: NormalizedOhlcvBar | null = null;
       try {
@@ -1192,9 +1222,17 @@ async function fetchAlphaVantageCandidateRows(
         };
       }
       fallbackSymbols.push(symbol.symbol_code);
+      symbolDiagnostics.push(alphaVantageSymbolDiagnostic(
+        symbol.symbol_code,
+        alphaVantageAttemptedSymbolsFromDiagnostics(latestDiagnostics),
+        null,
+        latestDiagnostics.fallback_reason,
+      ));
       fallbackWarnings.push({
         level: "medium",
-        message: `${symbol.symbol_code} belum tersedia dari Alpha Vantage; memakai fallback stale.`,
+        message: latestDiagnostics.fallback_reason === "alpha_vantage_invalid_symbol"
+          ? `${symbol.symbol_code} belum didukung provider setelah varian simbol dicoba; memakai fallback stale.`
+          : `${symbol.symbol_code} belum tersedia dari Alpha Vantage; memakai fallback stale.`,
       });
       priceSnapshots.push(sampleQuote(symbol, observedAt, fallbackProvider.provider_name, fallbackProvider.id, "stale"));
       technicalIndicators.push(sampleIndicator(symbol, observedAt, fallbackProvider.provider_name, fallbackProvider.id, "stale"));
@@ -1249,6 +1287,7 @@ async function fetchAlphaVantageCandidateRows(
     diagnostics: hasFallback && latestDiagnostics
       ? {
         ...latestDiagnostics,
+        symbol_diagnostics: symbolDiagnostics,
         fallback_reason: alphaVantageAggregateFallbackReason(
           latestDiagnostics.fallback_reason,
           providerStopState?.reason,
@@ -1263,8 +1302,10 @@ async function fetchAlphaVantageCandidateRows(
 async function fetchAlphaVantageQuote(symbol: SymbolRow): Promise<AlphaVantageQuoteResult> {
   let latestDiagnostics: ProviderDiagnostics | undefined;
   const candidates = alphaVantageSymbolCandidates(symbol.symbol_code);
+  const attemptedProviderSymbols: string[] = [];
   for (let index = 0; index < candidates.length; index += 1) {
     const providerSymbol = candidates[index];
+    attemptedProviderSymbols.push(providerSymbol);
     const result = await alphaVantageQuery("GLOBAL_QUOTE", providerSymbol);
     latestDiagnostics = result.diagnostics;
     const quote = extractAlphaVantageQuote(result.payload);
@@ -1272,6 +1313,7 @@ async function fetchAlphaVantageQuote(symbol: SymbolRow): Promise<AlphaVantageQu
       return {
         quote,
         providerSymbol,
+        attemptedProviderSymbols,
         diagnostics: result.diagnostics,
       };
     }
@@ -1280,6 +1322,14 @@ async function fetchAlphaVantageQuote(symbol: SymbolRow): Promise<AlphaVantageQu
       latestDiagnostics = {
         ...result.diagnostics,
         fallback_reason: alphaVantageFallbackReason(result.payload),
+        symbol_diagnostics: [
+          alphaVantageSymbolDiagnostic(
+            symbol.symbol_code,
+            attemptedProviderSymbols,
+            null,
+            alphaVantageFallbackReason(result.payload),
+          ),
+        ],
       };
       const canRetryWithSuffix = latestDiagnostics.fallback_reason === "alpha_vantage_invalid_symbol" && index < candidates.length - 1;
       if (canRetryWithSuffix) continue;
@@ -1298,6 +1348,16 @@ async function fetchAlphaVantageQuote(symbol: SymbolRow): Promise<AlphaVantageQu
     fallback_reason: latestDiagnostics?.fallback_reason && latestDiagnostics.fallback_reason !== "none"
       ? latestDiagnostics.fallback_reason
       : "alpha_vantage_quote_missing",
+    symbol_diagnostics: [
+      alphaVantageSymbolDiagnostic(
+        symbol.symbol_code,
+        attemptedProviderSymbols,
+        null,
+        latestDiagnostics?.fallback_reason && latestDiagnostics.fallback_reason !== "none"
+          ? latestDiagnostics.fallback_reason
+          : "alpha_vantage_quote_missing",
+      ),
+    ],
   });
 }
 
@@ -1611,6 +1671,26 @@ function safeProviderSymbol(value: unknown): string | null {
   const symbol = nullableString(value)?.toUpperCase();
   if (!symbol || !/^[A-Z0-9._:^/-]{1,40}$/.test(symbol)) return null;
   return symbol;
+}
+
+function alphaVantageSymbolDiagnostic(
+  requestedSymbol: string,
+  attemptedProviderSymbols: string[],
+  selectedProviderSymbol: string | null,
+  fallbackReason: string,
+): ProviderSymbolDiagnostics {
+  return {
+    requested_symbol: requestedSymbol,
+    attempted_provider_symbols: [...new Set(attemptedProviderSymbols.map((symbol) => symbol.toUpperCase()))],
+    selected_provider_symbol: selectedProviderSymbol,
+    fallback_reason: fallbackReason,
+  };
+}
+
+function alphaVantageAttemptedSymbolsFromDiagnostics(diagnostics: ProviderDiagnostics): string[] {
+  const items = diagnostics.symbol_diagnostics ?? [];
+  const latest = items.length > 0 ? items[items.length - 1] : undefined;
+  return latest?.attempted_provider_symbols ?? [];
 }
 
 function extractAlphaVantageQuote(payload: unknown): Record<string, unknown> | null {
