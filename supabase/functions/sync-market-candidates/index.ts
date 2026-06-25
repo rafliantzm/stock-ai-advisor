@@ -8,7 +8,9 @@ import {
   buildMarketCandidateRows,
   DEFAULT_PROVIDER_NAME,
   ensureProviderSource,
+  hasSecondaryProviderConfig,
   loadSymbols,
+  marketSecondaryProviderName,
   normalizeSymbolCodes,
   numberFromUnknown,
   providerMeta,
@@ -51,6 +53,9 @@ Deno.serve(async (req) => {
     const fallbackProvider = runtime.mode === "live"
       ? await ensureProviderSource(supabase, DEFAULT_PROVIDER_NAME, "sample")
       : provider;
+    const secondaryProvider = hasSecondaryProviderConfig()
+      ? await ensureProviderSource(supabase, marketSecondaryProviderName(), "vendor")
+      : undefined;
     const symbols = await loadSymbols(supabase, symbolCodes, limit);
     if (symbolCodes.length > 0 && symbols.length === 0) {
       throw notFound("No matching active symbols found", { symbol_codes: symbolCodes });
@@ -93,6 +98,7 @@ Deno.serve(async (req) => {
           observedAt,
           includeMarketContext,
           fallbackProvider,
+          secondaryProvider,
         );
 
         const { error: quoteError } = await supabase

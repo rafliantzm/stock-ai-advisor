@@ -60,6 +60,11 @@ export type ProviderDiagnostics = {
   fallback_provider_used?: boolean;
   provider_failover_reason?: string;
   secondary_provider_configured?: boolean;
+  secondary_provider_name?: string;
+  secondary_provider_host?: string | null;
+  secondary_provider_status_code?: number;
+  secondary_provider_response_keys?: string[];
+  secondary_provider_fallback_reason?: string;
   fallback_reason: string;
 };
 
@@ -253,6 +258,13 @@ type AlphaVantageStopState = {
   reason: string;
 };
 
+type SecondaryProviderQuoteResult = {
+  quote: ProviderQuoteResponse;
+  providerSymbol: string;
+  attemptedProviderSymbols: string[];
+  diagnostics: ProviderDiagnostics;
+};
+
 export const DEFAULT_PROVIDER_NAME = "sample_provider";
 export const DEFAULT_MARKET_CODE = "IDX";
 export const DEFAULT_INDEX_SYMBOL = "IHSG";
@@ -408,8 +420,9 @@ function diagnosticsFromError(
   return buildProviderDiagnostics(runtime, requestedSymbolCount, fallbackReason);
 }
 
-function marketSecondaryProviderName(): string {
+export function marketSecondaryProviderName(): string {
   return envFirst([
+    "SECONDARY_MARKET_DATA_PROVIDER",
     "MARKET_DATA_SECONDARY_PROVIDER",
     "MARKET_DATA_SECONDARY_PROVIDER_NAME",
     "MARKET_DATA_FALLBACK_PROVIDER",
@@ -417,39 +430,72 @@ function marketSecondaryProviderName(): string {
   ]) ?? "secondary_provider";
 }
 
-function hasSecondaryProviderConfig(): boolean {
+function secondaryProviderBaseUrl(): string | null {
+  return envFirst([
+    "SECONDARY_MARKET_DATA_PROVIDER_BASE_URL",
+    "MARKET_DATA_SECONDARY_PROVIDER_BASE_URL",
+    "MARKET_DATA_SECONDARY_API_BASE_URL",
+    "MARKET_DATA_FALLBACK_PROVIDER_BASE_URL",
+    "MARKET_DATA_FALLBACK_API_BASE_URL",
+  ]);
+}
+
+function secondaryProviderApiKey(): string | null {
+  return envFirst([
+    "SECONDARY_MARKET_DATA_PROVIDER_API_KEY",
+    "MARKET_DATA_SECONDARY_PROVIDER_API_KEY",
+    "MARKET_DATA_SECONDARY_API_KEY",
+    "MARKET_DATA_FALLBACK_PROVIDER_API_KEY",
+    "MARKET_DATA_FALLBACK_API_KEY",
+  ]);
+}
+
+export function hasSecondaryProviderConfig(): boolean {
   return Boolean(
     envFirst([
+      "SECONDARY_MARKET_DATA_PROVIDER",
       "MARKET_DATA_SECONDARY_PROVIDER",
       "MARKET_DATA_SECONDARY_PROVIDER_NAME",
       "MARKET_DATA_FALLBACK_PROVIDER",
       "MARKET_DATA_FALLBACK_PROVIDER_NAME",
-    ]) &&
-      envFirst([
-        "MARKET_DATA_SECONDARY_PROVIDER_BASE_URL",
-        "MARKET_DATA_SECONDARY_API_BASE_URL",
-        "MARKET_DATA_FALLBACK_PROVIDER_BASE_URL",
-        "MARKET_DATA_FALLBACK_API_BASE_URL",
-      ]) &&
-      envFirst([
-        "MARKET_DATA_SECONDARY_PROVIDER_API_KEY",
-        "MARKET_DATA_SECONDARY_API_KEY",
-        "MARKET_DATA_FALLBACK_PROVIDER_API_KEY",
-        "MARKET_DATA_FALLBACK_API_KEY",
-      ]),
+    ]) && secondaryProviderBaseUrl() && secondaryProviderApiKey(),
   );
 }
 
 function secondaryProviderFallbackReason(): string {
   return hasSecondaryProviderConfig()
-    ? "secondary_provider_adapter_not_enabled"
+    ? "secondary_provider_no_valid_quote"
     : "secondary_provider_not_configured";
+}
+
+function secondaryProviderDiagnostics(
+  fallbackReason: string,
+  statusCode?: number,
+  responseKeys?: string[],
+): Pick<
+  ProviderDiagnostics,
+  | "secondary_provider_configured"
+  | "secondary_provider_name"
+  | "secondary_provider_host"
+  | "secondary_provider_status_code"
+  | "secondary_provider_response_keys"
+  | "secondary_provider_fallback_reason"
+> {
+  return {
+    secondary_provider_configured: hasSecondaryProviderConfig(),
+    secondary_provider_name: marketSecondaryProviderName(),
+    secondary_provider_host: safeProviderHost(secondaryProviderBaseUrl()),
+    secondary_provider_status_code: statusCode,
+    secondary_provider_response_keys: responseKeys,
+    secondary_provider_fallback_reason: fallbackReason,
+  };
 }
 
 function providerFallbackAttempts(
   runtime: ProviderRuntime,
   selectedProvider: string,
   fallbackProviderUsed: boolean,
+  secondaryProviderUsed: boolean,
   failoverReason: string,
   dataQuality: MarketDataQuality,
 ): ProviderAttemptDiagnostics[] {
@@ -467,9 +513,13 @@ function providerFallbackAttempts(
     provider_name: marketSecondaryProviderName(),
     provider_role: "secondary",
     provider_configured: secondaryProviderConfigured,
-    provider_status: fallbackProviderUsed && secondaryProviderConfigured ? "attempted" : "skipped",
-    data_quality: "stale",
-    fallback_reason: secondaryProviderFallbackReason(),
+    provider_status: secondaryProviderUsed
+      ? selectedProvider === marketSecondaryProviderName() ? "selected" : "attempted"
+      : secondaryProviderConfigured && fallbackProviderUsed
+      ? "attempted"
+      : "skipped",
+    data_quality: secondaryProviderUsed ? dataQuality : "stale",
+    fallback_reason: secondaryProviderUsed ? "none" : secondaryProviderFallbackReason(),
   });
 
   attempts.push({
@@ -490,16 +540,28 @@ function withProviderFallbackDiagnostics(
   dataQuality: MarketDataQuality,
   fallbackProviderUsed: boolean,
   failoverReason: string,
+  secondaryProviderUsed = false,
 ): ProviderDiagnostics | undefined {
   if (!diagnostics) return undefined;
-  const selectedProvider = fallbackProviderUsed ? DEFAULT_PROVIDER_NAME : runtime.activeProviderName;
+  const selectedProvider = fallbackProviderUsed
+    ? DEFAULT_PROVIDER_NAME
+    : secondaryProviderUsed
+    ? marketSecondaryProviderName()
+    : runtime.activeProviderName;
   return {
     ...diagnostics,
-    provider_attempts: providerFallbackAttempts(runtime, selectedProvider, fallbackProviderUsed, failoverReason, dataQuality),
+    provider_attempts: providerFallbackAttempts(
+      runtime,
+      selectedProvider,
+      fallbackProviderUsed,
+      secondaryProviderUsed,
+      failoverReason,
+      dataQuality,
+    ),
     selected_provider: selectedProvider,
     fallback_provider_used: fallbackProviderUsed,
     provider_failover_reason: failoverReason,
-    secondary_provider_configured: hasSecondaryProviderConfig(),
+    ...secondaryProviderDiagnostics(secondaryProviderFallbackReason()),
   };
 }
 
@@ -843,6 +905,7 @@ export async function buildMarketCandidateRows(
   observedAt: string,
   includeMarketContext: boolean,
   fallbackProvider: ProviderSource = provider,
+  secondaryProvider?: ProviderSource,
 ): Promise<MarketCandidateRows> {
   if (runtime.isLiveConfigured) {
     try {
@@ -853,6 +916,7 @@ export async function buildMarketCandidateRows(
         runtime,
         observedAt,
         includeMarketContext,
+        secondaryProvider,
       );
       if (liveRows.priceSnapshots.length > 0 || !includeMarketContext || liveRows.marketContext) {
         return liveRows;
@@ -1016,10 +1080,11 @@ async function fetchLiveCandidateRows(
   runtime: ProviderRuntime,
   observedAt: string,
   includeMarketContext: boolean,
+  secondaryProvider?: ProviderSource,
 ): Promise<MarketCandidateRows> {
   assertSupportedLiveAdapter(runtime);
   if (runtime.providerAdapter === "alpha_vantage") {
-    return fetchAlphaVantageCandidateRows(symbols, provider, fallbackProvider, runtime, observedAt, includeMarketContext);
+    return fetchAlphaVantageCandidateRows(symbols, provider, fallbackProvider, runtime, observedAt, includeMarketContext, secondaryProvider);
   }
 
   const quoteResult = await providerPostJson("/quotes", {
@@ -1272,6 +1337,7 @@ async function fetchAlphaVantageCandidateRows(
   runtime: ProviderRuntime,
   observedAt: string,
   includeMarketContext: boolean,
+  secondaryProvider?: ProviderSource,
 ): Promise<MarketCandidateRows> {
   const priceSnapshots: NormalizedPriceSnapshot[] = [];
   const ohlcvBars: NormalizedOhlcvBar[] = [];
@@ -1374,6 +1440,60 @@ async function fetchAlphaVantageCandidateRows(
     }
   }
 
+  let secondaryProviderUsed = false;
+  if (fallbackSymbols.length > 0 && secondaryProvider && hasSecondaryProviderConfig()) {
+    const secondaryCandidates = symbols.filter((symbol) => fallbackSymbols.includes(symbol.symbol_code));
+    for (const symbol of secondaryCandidates) {
+      try {
+        const secondaryResult = await fetchSecondaryProviderQuote(symbol);
+        latestDiagnostics = secondaryResult.diagnostics;
+        const normalizedQuote = normalizeProviderQuote(symbol, secondaryResult.quote, observedAt, secondaryProvider);
+        if (!hasUsablePriceSnapshot(normalizedQuote)) {
+          throw new ProviderFetchError("Secondary provider quote has no usable price fields", {
+            ...secondaryResult.diagnostics,
+            fallback_reason: "secondary_provider_quote_incomplete",
+            symbol_diagnostics: [
+              alphaVantageSymbolDiagnostic(
+                symbol.symbol_code,
+                secondaryResult.attemptedProviderSymbols,
+                secondaryResult.providerSymbol,
+                "secondary_provider_quote_incomplete",
+              ),
+            ],
+          });
+        }
+
+        replacePriceSnapshot(priceSnapshots, normalizedQuote);
+        const secondaryOhlcv = ohlcvBarFromQuote(symbol, normalizedQuote, secondaryProvider);
+        if (secondaryOhlcv) replaceOhlcvBar(ohlcvBars, secondaryOhlcv);
+        replaceTechnicalIndicator(technicalIndicators, providerIndicatorFromQuote(symbol, normalizedQuote, secondaryProvider));
+        removeValue(fallbackSymbols, symbol.symbol_code);
+        removeSymbolWarnings(fallbackWarnings, symbol.symbol_code);
+        if (!liveSymbols.includes(symbol.symbol_code)) liveSymbols.push(symbol.symbol_code);
+        secondaryProviderUsed = true;
+        symbolDiagnostics.push(alphaVantageSymbolDiagnostic(
+          symbol.symbol_code,
+          secondaryResult.attemptedProviderSymbols,
+          normalizedQuote.provider_symbol,
+          "none",
+        ));
+      } catch (error) {
+        const secondaryDiagnostics = diagnosticsFromError(error, runtime, symbols.length, "secondary_provider_fetch_failed");
+        latestDiagnostics = {
+          ...secondaryDiagnostics,
+          fallback_reason: secondaryDiagnostics.secondary_provider_fallback_reason ??
+            secondaryDiagnostics.fallback_reason,
+        };
+        symbolDiagnostics.push(alphaVantageSymbolDiagnostic(
+          symbol.symbol_code,
+          secondaryAttemptedSymbolsFromDiagnostics(secondaryDiagnostics),
+          null,
+          latestDiagnostics.fallback_reason,
+        ));
+      }
+    }
+  }
+
   let marketContext: NormalizedMarketContext | null = null;
   let marketContextFallback = false;
   if (includeMarketContext) {
@@ -1414,13 +1534,14 @@ async function fetchAlphaVantageCandidateRows(
     : hasFallback
     ? "alpha_vantage_payload_stale_or_partial"
     : "none";
+  const sampleFallbackUsed = fallbackSymbols.length > 0 || marketContextFallback;
   const diagnostics = hasFallback && latestDiagnostics
     ? withProviderFallbackDiagnostics({
       ...latestDiagnostics,
       symbol_diagnostics: symbolDiagnostics,
       fallback_reason: providerFailoverReason,
-    }, runtime, dataQuality, true, providerFailoverReason)
-    : withProviderFallbackDiagnostics(latestDiagnostics, runtime, dataQuality, false, providerFailoverReason);
+    }, runtime, dataQuality, sampleFallbackUsed, providerFailoverReason, secondaryProviderUsed)
+    : withProviderFallbackDiagnostics(latestDiagnostics, runtime, dataQuality, false, providerFailoverReason, secondaryProviderUsed);
 
   return {
     priceSnapshots,
@@ -1644,6 +1765,207 @@ function normalizeAlphaVantageQuote(
   };
 }
 
+async function fetchSecondaryProviderQuote(symbol: SymbolRow): Promise<SecondaryProviderQuoteResult> {
+  if (!hasSecondaryProviderConfig()) {
+    throw new ProviderFetchError("Secondary provider is not configured", {
+      ...buildProviderDiagnosticsFromConfig(secondaryProviderBaseUrl(), false, 1, "secondary_provider_not_configured"),
+      ...secondaryProviderDiagnostics("secondary_provider_not_configured"),
+    });
+  }
+
+  const candidates = secondaryProviderSymbolCandidates(symbol.symbol_code);
+  const attemptedProviderSymbols: string[] = [];
+  let latestDiagnostics: ProviderDiagnostics | undefined;
+  for (const providerSymbol of candidates) {
+    attemptedProviderSymbols.push(providerSymbol);
+    const result = await secondaryProviderQuery(providerSymbol);
+    latestDiagnostics = result.diagnostics;
+    const quote = normalizeSecondaryProviderQuotePayload(symbol, result.payload);
+    if (quote) {
+      return {
+        quote,
+        providerSymbol,
+        attemptedProviderSymbols,
+        diagnostics: result.diagnostics,
+      };
+    }
+  }
+
+  throw new ProviderFetchError("Secondary provider returned no usable quote", {
+    ...(latestDiagnostics ??
+      buildProviderDiagnosticsFromConfig(
+        secondaryProviderBaseUrl(),
+        Boolean(secondaryProviderApiKey()),
+        1,
+        "secondary_provider_no_valid_quote",
+      )),
+    ...secondaryProviderDiagnostics(
+      latestDiagnostics?.secondary_provider_fallback_reason ?? "secondary_provider_no_valid_quote",
+      latestDiagnostics?.secondary_provider_status_code,
+      latestDiagnostics?.secondary_provider_response_keys,
+    ),
+    fallback_reason: latestDiagnostics?.fallback_reason && latestDiagnostics.fallback_reason !== "none"
+      ? latestDiagnostics.fallback_reason
+      : "secondary_provider_no_valid_quote",
+    symbol_diagnostics: [
+      alphaVantageSymbolDiagnostic(
+        symbol.symbol_code,
+        attemptedProviderSymbols,
+        null,
+        latestDiagnostics?.fallback_reason && latestDiagnostics.fallback_reason !== "none"
+          ? latestDiagnostics.fallback_reason
+          : "secondary_provider_no_valid_quote",
+      ),
+    ],
+  });
+}
+
+async function secondaryProviderQuery(providerSymbol: string): Promise<ProviderJsonResult> {
+  const baseUrl = secondaryProviderBaseUrl();
+  const apiKey = secondaryProviderApiKey();
+  const diagnostics = {
+    ...buildProviderDiagnosticsFromConfig(baseUrl, Boolean(apiKey), 1, "secondary_provider_request_started"),
+    ...secondaryProviderDiagnostics("secondary_provider_request_started"),
+  };
+  if (!baseUrl || !apiKey) {
+    throw new ProviderFetchError("Secondary provider env is incomplete", {
+      ...diagnostics,
+      ...secondaryProviderDiagnostics("secondary_provider_not_configured"),
+      fallback_reason: "secondary_provider_not_configured",
+    });
+  }
+
+  const symbolParam = envFirst([
+    "SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_PARAM",
+    "MARKET_DATA_SECONDARY_PROVIDER_SYMBOL_PARAM",
+  ]) ?? "symbol";
+  const configuredUrl = baseUrl.includes("{symbol}")
+    ? baseUrl.replace("{symbol}", encodeURIComponent(providerSymbol))
+    : baseUrl;
+  const url = new URL(configuredUrl);
+  if (!baseUrl.includes("{symbol}")) url.searchParams.set(symbolParam, providerSymbol);
+
+  const headerName = envFirst([
+    "SECONDARY_MARKET_DATA_PROVIDER_AUTH_HEADER",
+    "MARKET_DATA_SECONDARY_PROVIDER_AUTH_HEADER",
+  ]) ?? "Authorization";
+  const configuredPrefix = envFirst([
+    "SECONDARY_MARKET_DATA_PROVIDER_AUTH_PREFIX",
+    "MARKET_DATA_SECONDARY_PROVIDER_AUTH_PREFIX",
+  ]);
+  const defaultPrefix = headerName.toLowerCase() === "authorization" ? "Bearer" : "";
+  const authPrefix = configuredPrefix ?? defaultPrefix;
+  const authValue = authPrefix ? `${authPrefix} ${apiKey}` : apiKey;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "Accept": "application/json",
+        [headerName]: authValue,
+      },
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let payload: unknown;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      throw new ProviderFetchError("Secondary provider returned invalid JSON", {
+        ...diagnostics,
+        ...secondaryProviderDiagnostics("secondary_provider_invalid_json", response.status),
+        provider_http_status: response.status,
+        provider_status_code: response.status,
+        provider_content_type: response.headers.get("content-type"),
+        fallback_reason: "secondary_provider_invalid_json",
+      });
+    }
+
+    const responseKeys = topLevelJsonKeys(payload);
+    const responseDiagnostics: ProviderDiagnostics = {
+      ...diagnostics,
+      ...secondaryProviderDiagnostics(
+        response.ok ? "none" : `secondary_provider_http_${response.status}`,
+        response.status,
+        responseKeys,
+      ),
+      provider_http_status: response.status,
+      provider_status_code: response.status,
+      provider_content_type: response.headers.get("content-type"),
+      json_top_level_keys: responseKeys,
+      provider_response_keys: responseKeys,
+      fallback_reason: response.ok ? "none" : `secondary_provider_http_${response.status}`,
+    };
+    if (!response.ok) {
+      throw new ProviderFetchError(`Secondary provider returned HTTP ${response.status}`, responseDiagnostics);
+    }
+
+    return {
+      payload,
+      diagnostics: responseDiagnostics,
+    };
+  } catch (error) {
+    if (error instanceof ProviderFetchError) throw error;
+    const fallbackReason = error instanceof DOMException && error.name === "AbortError"
+      ? "secondary_provider_timeout"
+      : "secondary_provider_request_failed";
+    throw new ProviderFetchError("Secondary provider request failed", {
+      ...diagnostics,
+      ...secondaryProviderDiagnostics(fallbackReason),
+      fallback_reason: fallbackReason,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function normalizeSecondaryProviderQuotePayload(symbol: SymbolRow, payload: unknown): ProviderQuoteResponse | null {
+  const record = extractRecordPayload(payload, ["quote", "quotes", "data", "item", "result", "payload"]);
+  if (!isRecord(record)) return null;
+  const providerSymbol = nullableString(
+    record.symbol ?? record.symbol_code ?? record.ticker ?? record.code ?? record.provider_symbol,
+  );
+  const lastPrice = nullableNumber(
+    record.price ?? record.last ?? record.last_price ?? record.close ?? record.close_price,
+  );
+  const volume = nullableNumber(record.volume ?? record.vol);
+  if (lastPrice === null && volume === null) return null;
+
+  return {
+    symbol_code: symbol.symbol_code,
+    symbol: providerSymbol ?? symbol.symbol_code,
+    provider_symbol: providerSymbol ?? symbol.symbol_code,
+    source_time: record.timestamp ?? record.date ?? record.time ?? record.observed_at,
+    price: lastPrice,
+    close: record.close ?? record.close_price ?? lastPrice,
+    open: record.open ?? record.open_price,
+    high: record.high ?? record.high_price,
+    low: record.low ?? record.low_price,
+    previous_close: record.previous_close ?? record.prev_close,
+    change: record.change ?? record.change_value,
+    change_percent: record.change_percent ?? record.percent_change,
+    volume,
+    currency: record.currency,
+    data_quality: record.data_quality ?? record.quality ?? "delayed",
+    is_delayed: record.is_delayed ?? true,
+  };
+}
+
+function secondaryProviderSymbolCandidates(symbolCode: string): string[] {
+  const normalized = symbolCode.trim().toUpperCase();
+  const candidates = [normalized];
+  const configuredSuffix = envFirst([
+    "SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_SUFFIX",
+    "MARKET_DATA_SECONDARY_PROVIDER_SYMBOL_SUFFIX",
+  ]);
+  if (configuredSuffix && !normalized.endsWith(configuredSuffix.toUpperCase())) {
+    candidates.push(`${normalized}${configuredSuffix.toUpperCase()}`);
+  }
+  return [...new Set(candidates)];
+}
+
 async function fetchLiveMarketContext(
   provider: ProviderSource,
   observedAt: string,
@@ -1834,6 +2156,41 @@ function alphaVantageAttemptedSymbolsFromDiagnostics(diagnostics: ProviderDiagno
   return latest?.attempted_provider_symbols ?? [];
 }
 
+function secondaryAttemptedSymbolsFromDiagnostics(diagnostics: ProviderDiagnostics): string[] {
+  const items = diagnostics.symbol_diagnostics ?? [];
+  const latest = items.length > 0 ? items[items.length - 1] : undefined;
+  return latest?.attempted_provider_symbols ?? [];
+}
+
+function replacePriceSnapshot(rows: NormalizedPriceSnapshot[], row: NormalizedPriceSnapshot): void {
+  const index = rows.findIndex((item) => item.symbol_code === row.symbol_code);
+  if (index >= 0) rows[index] = row;
+  else rows.push(row);
+}
+
+function replaceOhlcvBar(rows: NormalizedOhlcvBar[], row: NormalizedOhlcvBar): void {
+  const index = rows.findIndex((item) => item.symbol_code === row.symbol_code && item.timeframe === row.timeframe);
+  if (index >= 0) rows[index] = row;
+  else rows.push(row);
+}
+
+function replaceTechnicalIndicator(rows: NormalizedTechnicalIndicator[], row: NormalizedTechnicalIndicator): void {
+  const index = rows.findIndex((item) => item.symbol_code === row.symbol_code && item.timeframe === row.timeframe);
+  if (index >= 0) rows[index] = row;
+  else rows.push(row);
+}
+
+function removeValue(values: string[], value: string): void {
+  const index = values.indexOf(value);
+  if (index >= 0) values.splice(index, 1);
+}
+
+function removeSymbolWarnings(warnings: RiskWarning[], symbolCode: string): void {
+  for (let index = warnings.length - 1; index >= 0; index -= 1) {
+    if (warnings[index].message.startsWith(`${symbolCode} `)) warnings.splice(index, 1);
+  }
+}
+
 function extractAlphaVantageQuote(payload: unknown): Record<string, unknown> | null {
   if (!isRecord(payload)) return null;
   const quote = payload["Global Quote"];
@@ -1869,6 +2226,10 @@ function isAlphaVantageProviderMessage(reason: string | undefined): boolean {
     reason === "alpha_vantage_invalid_symbol";
 }
 
+function isSecondaryProviderReason(reason: string | undefined): boolean {
+  return Boolean(reason?.startsWith("secondary_provider_"));
+}
+
 function alphaVantageAggregateFallbackReason(
   latestReason: string,
   stopReason: string | undefined,
@@ -1876,6 +2237,7 @@ function alphaVantageAggregateFallbackReason(
   marketContextFallback: boolean,
 ): string {
   if (stopReason) return stopReason;
+  if (isSecondaryProviderReason(latestReason)) return latestReason;
   if (isAlphaVantageProviderMessage(latestReason)) return latestReason;
   if (hasFallbackSymbols) return "alpha_vantage_payload_missing_or_incomplete_symbols";
   if (marketContextFallback) return "market_context_fallback";

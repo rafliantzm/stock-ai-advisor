@@ -52,6 +52,12 @@ Optional Alpha Vantage settings:
 
 Optional provider fallback settings:
 
+- Preferred generic secondary provider names:
+  - `SECONDARY_MARKET_DATA_PROVIDER`
+  - `SECONDARY_MARKET_DATA_PROVIDER_BASE_URL`
+  - `SECONDARY_MARKET_DATA_PROVIDER_API_KEY`
+  - `SECONDARY_MARKET_DATA_PROVIDER_AUTH_HEADER`
+  - `SECONDARY_MARKET_DATA_PROVIDER_SYMBOL_SUFFIX`
 - Preferred secondary provider names:
   - `MARKET_DATA_SECONDARY_PROVIDER` or `MARKET_DATA_SECONDARY_PROVIDER_NAME`
   - `MARKET_DATA_SECONDARY_PROVIDER_BASE_URL` or `MARKET_DATA_SECONDARY_API_BASE_URL`
@@ -60,7 +66,8 @@ Optional provider fallback settings:
 - `MARKET_DATA_FALLBACK_PROVIDER` or `MARKET_DATA_FALLBACK_PROVIDER_NAME`
 - `MARKET_DATA_FALLBACK_PROVIDER_BASE_URL` or `MARKET_DATA_FALLBACK_API_BASE_URL`
 - `MARKET_DATA_FALLBACK_PROVIDER_API_KEY` or `MARKET_DATA_FALLBACK_API_KEY`
-- Current secondary provider support is diagnostic-first. If no secondary adapter is enabled, the system safely continues to stale/sample fallback.
+- If secondary provider env is complete, the generic JSON quote adapter tries it after Alpha Vantage fallback/provider-message cases.
+- If secondary provider env is missing, the system safely continues to stale/sample fallback.
 
 Actual:
 
@@ -137,6 +144,11 @@ Expected fallback result:
   - `fallback_provider_used`
   - `provider_failover_reason`
   - `secondary_provider_configured`
+  - `secondary_provider_name`
+  - `secondary_provider_host`
+  - `secondary_provider_status_code`
+  - `secondary_provider_response_keys`
+  - `secondary_provider_fallback_reason`
   - `fallback_reason`
 - diagnostics must not include API key, Authorization header, JWT, service role key, full URL, or raw provider response
 
@@ -156,7 +168,7 @@ Symbol candidate order:
 Provider priority strategy:
 
 1. Primary provider: `alpha_vantage`.
-2. Secondary provider placeholder, using configured secondary/fallback provider env when available.
+2. Secondary provider generic JSON adapter, using configured secondary/fallback provider env when available.
 3. Stale/sample fallback.
 
 Expected secondary provider diagnostics:
@@ -167,11 +179,24 @@ Expected secondary provider diagnostics:
   - `provider_configured = false`
   - `provider_status = skipped`
   - `fallback_reason = secondary_provider_not_configured`
-- When secondary provider env exists but no adapter is enabled yet:
+- When secondary provider env exists and generic JSON returns valid quote data:
+  - `provider_role = secondary`
+  - `provider_configured = true`
+  - `provider_status = selected` or `attempted`
+  - `selected_provider = <secondary provider name>` when no sample fallback remains
+- When secondary provider env exists but no valid quote is returned:
   - `provider_role = secondary`
   - `provider_configured = true`
   - `provider_status = attempted`
-  - `fallback_reason = secondary_provider_adapter_not_enabled`
+  - `fallback_reason = secondary_provider_no_valid_quote` or another safe secondary fallback reason
+
+Generic secondary quote mapping supports common JSON keys:
+
+- symbol: `symbol`, `symbol_code`, `ticker`, `code`, `provider_symbol`
+- price: `price`, `last`, `last_price`, `close`, `close_price`
+- OHLC: `open`, `high`, `low`, `close`
+- volume: `volume`, `vol`
+- time: `timestamp`, `date`, `time`, `observed_at`
 
 Safe provider attempt metadata may include provider name, provider role, configured status, selected/skipped/fallback status, data quality, and failover reason. It must not include provider URL path, query string, secret, API key, JWT, or raw provider response.
 
