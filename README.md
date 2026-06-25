@@ -59,21 +59,25 @@ stock-ai-advisor/
 - Semua rule engine, scoring, dan logic sensitif dijalankan di backend.
 - Flutter hanya menampilkan data, meminta analisis, dan merender explanation.
 
-## Status Awal
+## Status Saat Ini
 
-Fondasi repository sudah disiapkan untuk pengembangan bertahap. Langkah berikutnya adalah membuat Flutter app di `apps/mobile`, menginisialisasi Supabase project, lalu menambahkan pipeline Python secara bertahap.
+P2 market data milestone sudah selesai sebagai delayed provider-backed release. Provider chain final adalah:
+
+```text
+alpha_vantage -> twelve_data -> eodhd -> sample_provider
+```
+
+Dokumen packaging final untuk demo, laporan akademik, dan repository readiness tersedia di [docs/62-p2-final-project-packaging.md](docs/62-p2-final-project-packaging.md).
 
 ## Perintah Awal yang Umum
 
 ```bash
-# Membuat Flutter app nanti di folder yang sudah disiapkan
-cd apps
-flutter create mobile
-
-# Menjalankan Flutter app
-cd mobile
+# Menjalankan Flutter web dengan Supabase anon config
+cd apps/mobile
 flutter pub get
-flutter run
+flutter run -d web-server --web-port=3000 \
+  --dart-define=SUPABASE_URL=https://PROJECT_REF.supabase.co \
+  --dart-define=SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
 ```
 
 Untuk Supabase dan Python, lihat [docs/architecture.md](docs/architecture.md) dan [docs/development-roadmap.md](docs/development-roadmap.md).
