@@ -235,7 +235,7 @@ class _MarketCandidateSyncCard extends StatelessWidget {
               runSpacing: 8,
               children: [
                 if (sync!.isDelayedLive)
-                  const StatusBadge(label: 'Delayed Live Data')
+                  const StatusBadge(label: 'Delayed provider-backed data')
                 else
                   StatusBadge(label: sync!.dataQuality),
                 if (sync!.isMultiProvider)

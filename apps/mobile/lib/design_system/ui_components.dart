@@ -247,18 +247,19 @@ class RiskWarningBox extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final severity = _riskSeverityColors(scheme, level);
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: scheme.errorContainer.withValues(alpha: 0.62),
+        color: severity.container,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: scheme.error.withValues(alpha: 0.45)),
+        border: Border.all(color: severity.border),
       ),
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(Icons.warning_amber_rounded, color: scheme.error),
+            Icon(Icons.warning_amber_rounded, color: severity.icon),
             const SizedBox(width: 10),
             Expanded(
               child: Column(
@@ -269,13 +270,13 @@ class RiskWarningBox extends StatelessWidget {
                         ? 'risk warning'
                         : 'risk warning - ${humanizeUiText(level!)}',
                     style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      color: scheme.onErrorContainer,
+                      color: severity.foreground,
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     humanizeUiText(message),
-                    style: TextStyle(color: scheme.onErrorContainer),
+                    style: TextStyle(color: severity.foreground),
                   ),
                 ],
               ),
@@ -297,11 +298,12 @@ class CompactRiskWarningList extends StatelessWidget {
     if (items.isEmpty) return const SizedBox.shrink();
 
     final scheme = Theme.of(context).colorScheme;
+    final severity = _riskSeverityColors(scheme, _highestRiskSeverity(items));
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: scheme.errorContainer.withValues(alpha: 0.28),
+        color: severity.container,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: scheme.error.withValues(alpha: 0.22)),
+        border: Border.all(color: severity.border),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -311,7 +313,7 @@ class CompactRiskWarningList extends StatelessWidget {
             Text(
               'risk warning',
               style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                color: scheme.onErrorContainer,
+                color: severity.foreground,
                 fontWeight: FontWeight.w800,
               ),
             ),
@@ -322,30 +324,37 @@ class CompactRiskWarningList extends StatelessWidget {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 7,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: scheme.error.withValues(alpha: 0.14),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Text(
-                        humanizeUiText(item.level),
-                        // Level labels are intentionally compact, but still
-                        // humanized so backend enum names do not leak.
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: scheme.onErrorContainer,
-                        ),
-                      ),
+                    Builder(
+                      builder: (context) {
+                        final itemSeverity = _riskSeverityColors(
+                          scheme,
+                          item.level,
+                        );
+                        return Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 7,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: itemSeverity.icon.withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            humanizeUiText(item.level),
+                            // Level labels are intentionally compact, but still
+                            // humanized so backend enum names do not leak.
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(color: itemSeverity.foreground),
+                          ),
+                        );
+                      },
                     ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        item.message,
+                        humanizeUiText(item.message),
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: scheme.onErrorContainer,
+                          color: severity.foreground,
                         ),
                       ),
                     ),
@@ -363,6 +372,8 @@ String humanizeUiText(Object? value) {
   if (value == null) return 'Menunggu data';
   final text = value.toString().trim();
   if (text.isEmpty || text == '-') return 'Menunggu data';
+  final timestamp = formatWibTimestamp(text);
+  if (timestamp != text) return timestamp;
   final normalized = text.toLowerCase();
   const exact = {
     'needs_more_data': 'Data belum cukup',
@@ -373,8 +384,10 @@ String humanizeUiText(Object? value) {
     'alpha_vantage': 'Alpha Vantage',
     'twelve_data': 'Twelve Data',
     'eodhd': 'EODHD',
-    'delayed': 'Delayed Live Data',
-    'live': 'Live',
+    'delayed': 'Delayed provider-backed data',
+    'delayed live data': 'Delayed provider-backed data',
+    'live': 'Provider-backed data',
+    'live provider': 'Provider-backed delayed',
     'stale': 'Stale',
     'sample': 'Sample data',
     'provider_backed_context': 'Provider-backed context',
@@ -384,6 +397,114 @@ String humanizeUiText(Object? value) {
   final mapped = exact[normalized];
   if (mapped != null) return mapped;
   return text.replaceAll('_', ' ');
+}
+
+String formatWibTimestamp(Object? value) {
+  if (value == null) return 'Menunggu data';
+  final text = value.toString().trim();
+  if (text.isEmpty || text == '-') return 'Menunggu data';
+  final looksLikeTimestamp =
+      text.contains('T') ||
+      RegExp(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}').hasMatch(text);
+  if (!looksLikeTimestamp) return text;
+
+  final parsed = DateTime.tryParse(text);
+  if (parsed == null) return text;
+  final wib = parsed.toUtc().add(const Duration(hours: 7));
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'Mei',
+    'Jun',
+    'Jul',
+    'Agu',
+    'Sep',
+    'Okt',
+    'Nov',
+    'Des',
+  ];
+  final hour = wib.hour.toString().padLeft(2, '0');
+  final minute = wib.minute.toString().padLeft(2, '0');
+  return '${wib.day} ${months[wib.month - 1]} ${wib.year}, $hour:$minute WIB';
+}
+
+String riskSeverityBand(Object? level) {
+  final text = level?.toString().toLowerCase().trim() ?? '';
+  if (text.contains('high') ||
+      text.contains('tinggi') ||
+      text.contains('critical') ||
+      text.contains('error') ||
+      text.contains('gagal')) {
+    return 'high';
+  }
+  if (text.contains('low') ||
+      text.contains('rendah') ||
+      text.contains('info') ||
+      text.contains('success') ||
+      text.contains('delayed') ||
+      text.contains('education') ||
+      text.contains('preview')) {
+    return 'low';
+  }
+  return 'medium';
+}
+
+String _highestRiskSeverity(List<CompactRiskWarningItem> items) {
+  var highest = 'low';
+  for (final item in items) {
+    final severity = riskSeverityBand(item.level);
+    if (severity == 'high') return 'high';
+    if (severity == 'medium') highest = 'medium';
+  }
+  return highest;
+}
+
+_RiskSeverityColors _riskSeverityColors(ColorScheme scheme, Object? level) {
+  switch (riskSeverityBand(level)) {
+    case 'high':
+      return _RiskSeverityColors(
+        container: scheme.errorContainer.withValues(alpha: 0.62),
+        border: scheme.error.withValues(alpha: 0.45),
+        foreground: scheme.onErrorContainer,
+        icon: scheme.error,
+      );
+    case 'medium':
+      return _RiskSeverityColors(
+        container: Color.alphaBlend(
+          Colors.amber.withValues(alpha: 0.20),
+          scheme.surface,
+        ),
+        border: Colors.orange.withValues(alpha: 0.42),
+        foreground: scheme.onSurface,
+        icon: Colors.orange.shade700,
+      );
+    default:
+      return _RiskSeverityColors(
+        container: Color.alphaBlend(
+          scheme.tertiary.withValues(alpha: 0.12),
+          scheme.surface,
+        ),
+        border: scheme.tertiary.withValues(alpha: 0.32),
+        foreground: scheme.onSurface,
+        icon: scheme.tertiary,
+      );
+  }
+}
+
+class _RiskSeverityColors {
+  const _RiskSeverityColors({
+    required this.container,
+    required this.border,
+    required this.foreground,
+    required this.icon,
+  });
+
+  final Color container;
+  final Color border;
+  final Color foreground;
+  final Color icon;
 }
 
 class CompactRiskWarningItem {

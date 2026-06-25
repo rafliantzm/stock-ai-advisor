@@ -23,7 +23,7 @@ class ChartLabScreen extends StatelessWidget {
         const AppSectionHeader(
           title: 'Chart Lab',
           subtitle:
-              'Provider P2 sudah aktif sebagai delayed context; chart interaktif OHLCV masih tahap integrasi.',
+              'Provider-backed delayed data tersedia; chart interaktif OHLCV masih tahap integrasi.',
         ),
         const SizedBox(height: 16),
         Card(
@@ -49,7 +49,7 @@ class ChartLabScreen extends StatelessWidget {
                     child: const Padding(
                       padding: EdgeInsets.all(16),
                       child: Text(
-                        'Provider-backed OHLCV cache sedang disiapkan untuk Chart Lab',
+                        'Provider-backed delayed data tersedia. OHLCV chart interaktif sedang diintegrasikan.',
                       ),
                     ),
                   ),
@@ -67,7 +67,7 @@ class ChartLabScreen extends StatelessWidget {
             spacing: 8,
             runSpacing: 8,
             children: [
-              const StatusBadge(label: 'Delayed Live Data'),
+              const StatusBadge(label: 'Delayed provider-backed data'),
               const StatusBadge(label: 'OHLCV cache pending'),
               for (final overlay in _overlays) StatusBadge(label: overlay),
             ],
@@ -77,7 +77,7 @@ class ChartLabScreen extends StatelessWidget {
         RiskWarningBox(
           level: 'preview',
           message:
-              'Data provider P2 sudah aktif sebagai delayed context. Chart Lab saat ini masih preview edukatif sampai endpoint OHLCV siap.',
+              'Provider-backed delayed data sudah tersedia. Chart Lab saat ini masih preview edukatif sampai endpoint OHLCV interaktif siap.',
         ),
       ],
     );
