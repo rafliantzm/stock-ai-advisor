@@ -59,12 +59,13 @@ export type ProviderDiagnostics = {
   selected_provider?: string;
   fallback_provider_used?: boolean;
   provider_failover_reason?: string;
+  secondary_provider_configured?: boolean;
   fallback_reason: string;
 };
 
 export type ProviderAttemptDiagnostics = {
   provider_name: string;
-  provider_role: "primary" | "fallback" | "sample";
+  provider_role: "primary" | "secondary" | "sample";
   provider_configured: boolean;
   provider_status: "attempted" | "skipped" | "selected" | "fallback";
   data_quality: MarketDataQuality;
@@ -407,16 +408,42 @@ function diagnosticsFromError(
   return buildProviderDiagnostics(runtime, requestedSymbolCount, fallbackReason);
 }
 
-function marketFallbackProviderName(): string | null {
-  return envFirst(["MARKET_DATA_FALLBACK_PROVIDER", "MARKET_DATA_FALLBACK_PROVIDER_NAME"]);
+function marketSecondaryProviderName(): string {
+  return envFirst([
+    "MARKET_DATA_SECONDARY_PROVIDER",
+    "MARKET_DATA_SECONDARY_PROVIDER_NAME",
+    "MARKET_DATA_FALLBACK_PROVIDER",
+    "MARKET_DATA_FALLBACK_PROVIDER_NAME",
+  ]) ?? "secondary_provider";
 }
 
-function hasFallbackProviderConfig(): boolean {
+function hasSecondaryProviderConfig(): boolean {
   return Boolean(
-    marketFallbackProviderName() &&
-      envFirst(["MARKET_DATA_FALLBACK_PROVIDER_BASE_URL", "MARKET_DATA_FALLBACK_API_BASE_URL"]) &&
-      envFirst(["MARKET_DATA_FALLBACK_PROVIDER_API_KEY", "MARKET_DATA_FALLBACK_API_KEY"]),
+    envFirst([
+      "MARKET_DATA_SECONDARY_PROVIDER",
+      "MARKET_DATA_SECONDARY_PROVIDER_NAME",
+      "MARKET_DATA_FALLBACK_PROVIDER",
+      "MARKET_DATA_FALLBACK_PROVIDER_NAME",
+    ]) &&
+      envFirst([
+        "MARKET_DATA_SECONDARY_PROVIDER_BASE_URL",
+        "MARKET_DATA_SECONDARY_API_BASE_URL",
+        "MARKET_DATA_FALLBACK_PROVIDER_BASE_URL",
+        "MARKET_DATA_FALLBACK_API_BASE_URL",
+      ]) &&
+      envFirst([
+        "MARKET_DATA_SECONDARY_PROVIDER_API_KEY",
+        "MARKET_DATA_SECONDARY_API_KEY",
+        "MARKET_DATA_FALLBACK_PROVIDER_API_KEY",
+        "MARKET_DATA_FALLBACK_API_KEY",
+      ]),
   );
+}
+
+function secondaryProviderFallbackReason(): string {
+  return hasSecondaryProviderConfig()
+    ? "secondary_provider_adapter_not_enabled"
+    : "secondary_provider_not_configured";
 }
 
 function providerFallbackAttempts(
@@ -435,19 +462,15 @@ function providerFallbackAttempts(
     fallback_reason: failoverReason,
   }];
 
-  const fallbackName = marketFallbackProviderName();
-  if (fallbackName) {
-    attempts.push({
-      provider_name: fallbackName,
-      provider_role: "fallback",
-      provider_configured: hasFallbackProviderConfig(),
-      provider_status: fallbackProviderUsed ? "attempted" : "skipped",
-      data_quality: "stale",
-      fallback_reason: hasFallbackProviderConfig()
-        ? "fallback_provider_adapter_not_enabled"
-        : "fallback_provider_env_incomplete",
-    });
-  }
+  const secondaryProviderConfigured = hasSecondaryProviderConfig();
+  attempts.push({
+    provider_name: marketSecondaryProviderName(),
+    provider_role: "secondary",
+    provider_configured: secondaryProviderConfigured,
+    provider_status: fallbackProviderUsed && secondaryProviderConfigured ? "attempted" : "skipped",
+    data_quality: "stale",
+    fallback_reason: secondaryProviderFallbackReason(),
+  });
 
   attempts.push({
     provider_name: DEFAULT_PROVIDER_NAME,
@@ -476,6 +499,7 @@ function withProviderFallbackDiagnostics(
     selected_provider: selectedProvider,
     fallback_provider_used: fallbackProviderUsed,
     provider_failover_reason: failoverReason,
+    secondary_provider_configured: hasSecondaryProviderConfig(),
   };
 }
 
