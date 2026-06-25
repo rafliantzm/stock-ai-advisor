@@ -187,7 +187,7 @@ Deno.serve(async (req) => {
           provider_mode: rows.providerMode,
           ...(partialLiveMeta ?? {}),
         };
-        if (rows.providerMode === "provider_error" && rows.diagnostics) {
+        if (rows.diagnostics) {
           responseMeta.provider_diagnostics = rows.diagnostics;
         }
 

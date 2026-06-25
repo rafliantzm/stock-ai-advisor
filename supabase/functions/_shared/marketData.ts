@@ -69,6 +69,7 @@ export type ProviderDiagnostics = {
   tertiary_provider_configured?: boolean;
   tertiary_provider_name?: string;
   tertiary_provider_host?: string | null;
+  tertiary_provider_response_keys?: string[];
   tertiary_provider_fallback_reason?: string;
   fallback_reason: string;
 };
@@ -490,6 +491,11 @@ function tertiaryProviderBaseUrl(): string | null {
   ]);
 }
 
+function isEodhdTertiaryProvider(): boolean {
+  const providerName = marketTertiaryProviderName().trim().toLowerCase();
+  return providerName === "eodhd" || providerName === "eod_historical_data";
+}
+
 function tertiaryProviderApiKey(): string | null {
   return envFirst([
     "TERTIARY_MARKET_DATA_PROVIDER_API_KEY",
@@ -548,17 +554,20 @@ function secondaryProviderDiagnostics(
 
 function tertiaryProviderDiagnostics(
   fallbackReason: string,
+  responseKeys?: string[],
 ): Pick<
   ProviderDiagnostics,
   | "tertiary_provider_configured"
   | "tertiary_provider_name"
   | "tertiary_provider_host"
+  | "tertiary_provider_response_keys"
   | "tertiary_provider_fallback_reason"
 > {
   return {
     tertiary_provider_configured: hasTertiaryProviderConfig(),
     tertiary_provider_name: marketTertiaryProviderName(),
     tertiary_provider_host: safeProviderHost(tertiaryProviderBaseUrl()),
+    tertiary_provider_response_keys: responseKeys,
     tertiary_provider_fallback_reason: fallbackReason,
   };
 }
@@ -572,12 +581,19 @@ function providerFallbackAttempts(
   failoverReason: string,
   dataQuality: MarketDataQuality,
 ): ProviderAttemptDiagnostics[] {
+  const usedLiveProviderNames = new Set<string>();
+  if (selectedProvider === runtime.activeProviderName || selectedProvider === "mixed_live_providers") {
+    usedLiveProviderNames.add(runtime.activeProviderName);
+  }
+  if (secondaryProviderUsed) usedLiveProviderNames.add(marketSecondaryProviderName());
+  if (tertiaryProviderUsed) usedLiveProviderNames.add(marketTertiaryProviderName());
+
   const attempts: ProviderAttemptDiagnostics[] = [{
     provider_name: runtime.activeProviderName,
     provider_role: "primary",
     provider_configured: runtime.isLiveConfigured,
-    provider_status: selectedProvider === runtime.activeProviderName ? "selected" : "attempted",
-    data_quality: selectedProvider === runtime.activeProviderName ? dataQuality : "stale",
+    provider_status: usedLiveProviderNames.has(runtime.activeProviderName) ? "selected" : "attempted",
+    data_quality: usedLiveProviderNames.has(runtime.activeProviderName) ? dataQuality : "stale",
     fallback_reason: failoverReason,
   }];
 
@@ -587,7 +603,7 @@ function providerFallbackAttempts(
     provider_role: "secondary",
     provider_configured: secondaryProviderConfigured,
     provider_status: secondaryProviderUsed
-      ? selectedProvider === marketSecondaryProviderName() ? "selected" : "attempted"
+      ? usedLiveProviderNames.has(marketSecondaryProviderName()) ? "selected" : "attempted"
       : secondaryProviderConfigured && fallbackProviderUsed
       ? "attempted"
       : "skipped",
@@ -601,7 +617,7 @@ function providerFallbackAttempts(
     provider_role: "tertiary",
     provider_configured: tertiaryProviderConfigured,
     provider_status: tertiaryProviderUsed
-      ? selectedProvider === marketTertiaryProviderName() ? "selected" : "attempted"
+      ? usedLiveProviderNames.has(marketTertiaryProviderName()) ? "selected" : "attempted"
       : tertiaryProviderConfigured && fallbackProviderUsed
       ? "attempted"
       : "skipped",
@@ -631,13 +647,7 @@ function withProviderFallbackDiagnostics(
   tertiaryProviderUsed = false,
 ): ProviderDiagnostics | undefined {
   if (!diagnostics) return undefined;
-  const selectedProvider = fallbackProviderUsed
-    ? DEFAULT_PROVIDER_NAME
-    : tertiaryProviderUsed
-    ? marketTertiaryProviderName()
-    : secondaryProviderUsed
-    ? marketSecondaryProviderName()
-    : runtime.activeProviderName;
+  const selectedProvider = selectedProviderSummary(runtime, fallbackProviderUsed, secondaryProviderUsed, tertiaryProviderUsed);
   return {
     ...diagnostics,
     provider_attempts: providerFallbackAttempts(
@@ -652,15 +662,32 @@ function withProviderFallbackDiagnostics(
     selected_provider: selectedProvider,
     fallback_provider_used: fallbackProviderUsed,
     provider_failover_reason: failoverReason,
-    ...secondaryProviderDiagnostics(secondaryProviderFallbackReason()),
-    ...tertiaryProviderDiagnostics(tertiaryProviderFallbackReason()),
+    ...secondaryProviderDiagnostics(secondaryProviderUsed ? "none" : secondaryProviderFallbackReason()),
+    ...tertiaryProviderDiagnostics(
+      tertiaryProviderUsed ? "none" : tertiaryProviderFallbackReason(),
+      diagnostics.tertiary_provider_response_keys ?? diagnostics.provider_response_keys,
+    ),
   };
+}
+
+function selectedProviderSummary(
+  runtime: ProviderRuntime,
+  fallbackProviderUsed: boolean,
+  secondaryProviderUsed: boolean,
+  tertiaryProviderUsed: boolean,
+): string {
+  if (fallbackProviderUsed) return DEFAULT_PROVIDER_NAME;
+  const liveProviderCount = 1 + (secondaryProviderUsed ? 1 : 0) + (tertiaryProviderUsed ? 1 : 0);
+  if (liveProviderCount > 1) return "mixed_live_providers";
+  if (tertiaryProviderUsed) return marketTertiaryProviderName();
+  if (secondaryProviderUsed) return marketSecondaryProviderName();
+  return runtime.activeProviderName;
 }
 
 function safeProviderHost(baseUrl: string | null): string | null {
   if (!baseUrl) return null;
   try {
-    return new URL(baseUrl).hostname;
+    return new URL(normalizeUrlInput(baseUrl)).hostname;
   } catch {
     return null;
   }
@@ -697,6 +724,12 @@ export function buildRiskWarning(
   providerStatus: string,
   additional: RiskWarning[] = [],
 ): RiskWarning[] {
+  if (quality === "delayed") {
+    return [{
+      level: "low",
+      message: "Data provider bersifat delayed; gunakan sebagai konteks edukatif watchlist candidate.",
+    }, ...additional];
+  }
   if (isProviderFreshQuality(quality)) return additional;
   const baseMessage = quality === "sample"
     ? "Data masih sample; gunakan hanya untuk observasi watchlist candidate."
@@ -1675,26 +1708,27 @@ async function fetchAlphaVantageCandidateRows(
     }
   }
 
-  const hasFallback = fallbackWarnings.length > 0 || technicalIndicators.some((row) => !isProviderFreshQuality(row.data_quality)) ||
-    Boolean(marketContext && !isProviderFreshQuality(marketContext.data_quality));
-  const dataQuality = hasFallback ? "stale" : mergeProviderQualities([
+  const sampleFallbackUsed = fallbackSymbols.length > 0;
+  const dataQuality = sampleFallbackUsed ? "stale" : mergeProviderQualities([
     ...priceSnapshots.map((row) => row.data_quality),
     ...ohlcvBars.map((row) => row.data_quality),
     ...technicalIndicators.map((row) => row.data_quality),
-    ...(marketContext ? [marketContext.data_quality] : []),
   ]);
-  const providerFailoverReason = latestDiagnostics
+  const hasProviderIssues = fallbackWarnings.length > 0 || marketContextFallback;
+  const hasDiagnostics = sampleFallbackUsed || hasProviderIssues || latestDiagnostics !== undefined || secondaryProviderUsed || tertiaryProviderUsed;
+  const providerFailoverReason = sampleFallbackUsed && latestDiagnostics
     ? alphaVantageAggregateFallbackReason(
       latestDiagnostics.fallback_reason,
       providerStopState?.reason,
-      fallbackWarnings.length > 0,
+      sampleFallbackUsed,
       marketContextFallback,
     )
-    : hasFallback
+    : sampleFallbackUsed
     ? "alpha_vantage_payload_stale_or_partial"
+    : secondaryProviderUsed || tertiaryProviderUsed
+    ? "provider_chain_resolved"
     : "none";
-  const sampleFallbackUsed = fallbackSymbols.length > 0 || marketContextFallback;
-  const diagnostics = hasFallback && latestDiagnostics
+  const diagnostics = hasDiagnostics && latestDiagnostics
     ? withProviderFallbackDiagnostics({
       ...latestDiagnostics,
       symbol_diagnostics: symbolDiagnostics,
@@ -1718,12 +1752,14 @@ async function fetchAlphaVantageCandidateRows(
     liveSymbols,
     fallbackSymbols,
     dataQuality,
-    providerStatus: hasFallback
+    providerStatus: sampleFallbackUsed
       ? "Alpha Vantage aktif dengan sebagian data fallback"
+      : secondaryProviderUsed || tertiaryProviderUsed
+      ? "Provider live aktif dengan kontribusi multi-provider"
       : runtime.providerStatus,
-    riskWarning: buildRiskWarning(dataQuality, runtime.providerStatus, fallbackWarnings),
+    riskWarning: buildRiskWarning(dataQuality, runtime.providerStatus, sampleFallbackUsed ? fallbackWarnings : []),
     usedLiveAdapter: true,
-    providerMode: hasFallback ? "provider_error" : "live",
+    providerMode: sampleFallbackUsed ? "provider_error" : "live",
     diagnostics,
   };
 }
@@ -2106,7 +2142,9 @@ async function fetchTertiaryProviderQuote(symbol: SymbolRow): Promise<TertiaryPr
     try {
       const result = await tertiaryProviderQuery(providerSymbol);
       latestDiagnostics = result.diagnostics;
-      const quote = normalizeSecondaryProviderQuotePayload(symbol, result.payload);
+      const quote = isEodhdTertiaryProvider()
+        ? normalizeEodhdQuotePayload(symbol, result.payload)
+        : normalizeSecondaryProviderQuotePayload(symbol, result.payload);
       if (quote) {
         return {
           quote,
@@ -2137,6 +2175,7 @@ async function fetchTertiaryProviderQuote(symbol: SymbolRow): Promise<TertiaryPr
       )),
     ...tertiaryProviderDiagnostics(
       latestDiagnostics?.tertiary_provider_fallback_reason ?? "tertiary_provider_no_valid_quote",
+      latestDiagnostics?.tertiary_provider_response_keys ?? latestDiagnostics?.provider_response_keys,
     ),
     fallback_reason: latestDiagnostics?.fallback_reason && latestDiagnostics.fallback_reason !== "none"
       ? latestDiagnostics.fallback_reason
@@ -2169,7 +2208,11 @@ async function tertiaryProviderQuery(providerSymbol: string): Promise<ProviderJs
     });
   }
 
-  const url = buildTertiaryProviderQuoteUrl(baseUrl, providerSymbol);
+  const isEodhd = isEodhdTertiaryProvider();
+  const url = isEodhd
+    ? buildEodhdQuoteUrl(baseUrl, providerSymbol, apiKey)
+    : buildTertiaryProviderQuoteUrl(baseUrl, providerSymbol);
+  const authHeaders = isEodhd ? {} : buildTertiaryProviderAuthHeaders(apiKey);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
   try {
@@ -2177,7 +2220,7 @@ async function tertiaryProviderQuery(providerSymbol: string): Promise<ProviderJs
       method: "GET",
       headers: {
         "Accept": "application/json",
-        ...buildTertiaryProviderAuthHeaders(apiKey),
+        ...authHeaders,
       },
       signal: controller.signal,
     });
@@ -2202,7 +2245,7 @@ async function tertiaryProviderQuery(providerSymbol: string): Promise<ProviderJs
     const fallbackReason = response.ok ? providerPayloadError : tertiaryHttpFallbackReason(response.status);
     const responseDiagnostics: ProviderDiagnostics = {
       ...diagnostics,
-      ...tertiaryProviderDiagnostics(fallbackReason),
+      ...tertiaryProviderDiagnostics(fallbackReason, responseKeys),
       provider_http_status: response.status,
       provider_status_code: response.status,
       provider_content_type: contentType,
@@ -2294,6 +2337,25 @@ function buildTertiaryProviderQuoteUrl(baseUrl: string, providerSymbol: string):
   return url;
 }
 
+function buildEodhdQuoteUrl(baseUrl: string, providerSymbol: string, apiKey: string): URL {
+  const normalizedBase = normalizeUrlInput(baseUrl);
+  const configuredUrl = normalizedBase.includes("{symbol}")
+    ? normalizedBase.replace("{symbol}", encodeURIComponent(providerSymbol))
+    : normalizedBase;
+  const url = new URL(configuredUrl);
+  if (!normalizedBase.includes("{symbol}")) {
+    const path = url.pathname.replace(/\/+$/, "");
+    if (path === "" || path === "/" || path === "/api") {
+      url.pathname = `/api/real-time/${encodeURIComponent(providerSymbol)}`;
+    } else if (path.endsWith("/real-time")) {
+      url.pathname = `${path}/${encodeURIComponent(providerSymbol)}`;
+    }
+  }
+  url.searchParams.set("api_token", apiKey);
+  url.searchParams.set("fmt", "json");
+  return url;
+}
+
 function buildTertiaryProviderAuthHeaders(apiKey: string): Record<string, string> {
   const headerName = envFirst([
     "TERTIARY_MARKET_DATA_PROVIDER_AUTH_HEADER",
@@ -2378,6 +2440,38 @@ function normalizeSecondaryProviderQuotePayload(symbol: SymbolRow, payload: unkn
   };
 }
 
+function normalizeEodhdQuotePayload(symbol: SymbolRow, payload: unknown): ProviderQuoteResponse | null {
+  const record = extractRecordPayload(payload, ["quote", "quotes", "data", "item", "result", "payload"]);
+  if (!isRecord(record)) return null;
+  const providerSymbol = nullableString(
+    record.code ?? record.symbol ?? record.symbol_code ?? record.ticker ?? record.provider_symbol,
+  );
+  const lastPrice = nullableNumber(
+    record.close ?? record.price ?? record.last_price ?? record.last ?? record.close_price,
+  );
+  const volume = nullableNumber(record.volume ?? record.vol);
+  if (lastPrice === null && volume === null) return null;
+
+  return {
+    symbol_code: symbol.symbol_code,
+    symbol: providerSymbol ?? symbol.symbol_code,
+    provider_symbol: providerSymbol ?? symbol.symbol_code,
+    source_time: record.timestamp ?? record.datetime ?? record.date ?? record.time ?? record.observed_at,
+    price: lastPrice,
+    close: record.close ?? record.price ?? lastPrice,
+    open: record.open ?? record.open_price,
+    high: record.high ?? record.high_price,
+    low: record.low ?? record.low_price,
+    previous_close: record.previousClose ?? record.previous_close ?? record.prev_close,
+    change: record.change ?? record.change_value,
+    change_percent: record.change_p ?? record.change_percent ?? record.percent_change,
+    volume,
+    currency: record.currency,
+    data_quality: record.data_quality ?? record.quality ?? "delayed",
+    is_delayed: record.is_delayed ?? true,
+  };
+}
+
 function secondaryProviderSymbolCandidates(symbolCode: string): string[] {
   const normalized = symbolCode.trim().toUpperCase();
   if (marketSecondaryProviderName().trim().toLowerCase() === "twelve_data") {
@@ -2397,6 +2491,10 @@ function secondaryProviderSymbolCandidates(symbolCode: string): string[] {
 
 function tertiaryProviderSymbolCandidates(symbolCode: string): string[] {
   const normalized = symbolCode.trim().toUpperCase();
+  if (isEodhdTertiaryProvider()) {
+    return eodhdSymbolCandidates(normalized);
+  }
+
   const candidates: string[] = [];
   pushSafeProviderSymbol(candidates, normalized);
 
@@ -2406,6 +2504,34 @@ function tertiaryProviderSymbolCandidates(symbolCode: string): string[] {
   ]);
   if (configuredSuffix && /^[A-Z0-9]{2,8}$/.test(normalized) && !normalized.endsWith(configuredSuffix.toUpperCase())) {
     pushSafeProviderSymbol(candidates, `${normalized}${configuredSuffix.toUpperCase()}`);
+  }
+
+  for (const symbol of tertiaryProviderMappedSymbols(normalized)) {
+    pushSafeProviderSymbol(candidates, symbol);
+  }
+
+  return candidates.slice(0, tertiaryProviderMaxSymbolAttempts());
+}
+
+function eodhdSymbolCandidates(symbolCode: string): string[] {
+  const normalized = symbolCode.trim().toUpperCase();
+  const candidates: string[] = [];
+  pushSafeProviderSymbol(candidates, normalized);
+
+  const configuredSuffix = envFirst([
+    "TERTIARY_MARKET_DATA_PROVIDER_SYMBOL_SUFFIX",
+    "MARKET_DATA_TERTIARY_PROVIDER_SYMBOL_SUFFIX",
+    "EODHD_SYMBOL_SUFFIX",
+  ]) ?? ".JK";
+  const suffix = configuredSuffix.trim().toUpperCase();
+  if (suffix && /^[A-Z0-9]{2,8}$/.test(normalized) && !normalized.endsWith(suffix)) {
+    pushSafeProviderSymbol(candidates, `${normalized}${suffix}`);
+  }
+
+  for (const suffixCandidate of [".IDX", ".IS", ".JKSE"]) {
+    if (/^[A-Z0-9]{2,8}$/.test(normalized) && !normalized.endsWith(suffixCandidate)) {
+      pushSafeProviderSymbol(candidates, `${normalized}${suffixCandidate}`);
+    }
   }
 
   for (const symbol of tertiaryProviderMappedSymbols(normalized)) {
@@ -2426,9 +2552,9 @@ function tertiaryProviderMaxSymbolAttempts(): number {
   const configured = Number(envFirst([
     "TERTIARY_MARKET_DATA_PROVIDER_MAX_SYMBOL_ATTEMPTS",
     "MARKET_DATA_TERTIARY_PROVIDER_MAX_SYMBOL_ATTEMPTS",
-  ]) ?? 3);
-  if (!Number.isFinite(configured)) return 3;
-  return Math.max(1, Math.min(4, Math.round(configured)));
+  ]) ?? (isEodhdTertiaryProvider() ? 5 : 3));
+  if (!Number.isFinite(configured)) return isEodhdTertiaryProvider() ? 5 : 3;
+  return Math.max(1, Math.min(5, Math.round(configured)));
 }
 
 function twelveDataSymbolCandidates(symbolCode: string): string[] {
